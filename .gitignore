@@ -1,0 +1,69 @@
+# === Environnement / secrets ===
+.env
+*.env.local
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+.venv-aws/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === Docker ===
+*.pid
+
+# === Airflow ===
+airflow/logs/
+airflow/plugins/__pycache__/
+airflow.cfg
+airflow-webserver.pid
+
+# === Spark ===
+spark/jobs/__pycache__/
+spark-warehouse/
+derby.log
+metastore_db/
+
+# === Data lake (contenu genere localement, uniquement la structure/doc est versionnee) ===
+data/bronze/*
+data/silver/*
+data/gold/*
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+!data/bronze/SCHEMA_NOTES.md
+!data/silver/CLEANING_LOG.md
+!data/gold/GOLD_MODEL_DECISIONS.md
+
+# === dbt ===
+dbt/target/
+dbt/dbt_packages/
+dbt/.user.yml
+dbt/logs/
+
+# === Terraform (etape 6) ===
+# .terraform.lock.hcl est volontairement PAS ignore (recommandation
+# officielle Terraform : versionner le lock file pour la reproductibilite
+# des versions de provider entre machines).
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/crash.log
+terraform/tfplan.out
+
+# === IDE ===
+.vscode/
+.idea/
+*.iml
+
+# === OS ===
+.DS_Store
+Thumbs.db

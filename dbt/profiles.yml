@@ -1,0 +1,18 @@
+# Profil dbt pour le projet SafeLift.
+# Aucune valeur sensible en dur : tout passe par des variables d'environnement
+# (memes noms que celles deja utilisees par docker-compose pour app-postgres,
+# prefixees DBT_ pour eviter toute ambiguite dans l'environnement du conteneur
+# Airflow qui execute dbt). Voir airflow/dags/gold_dbt_run.py pour la ou ces
+# variables sont injectees.
+safelift:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_POSTGRES_HOST', 'app-postgres') }}"
+      port: "{{ env_var('DBT_POSTGRES_PORT', '5432') | as_number }}"
+      user: "{{ env_var('DBT_POSTGRES_USER') }}"
+      pass: "{{ env_var('DBT_POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('DBT_POSTGRES_DB') }}"
+      schema: gold
+      threads: 4

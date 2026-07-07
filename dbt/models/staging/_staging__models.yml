@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_gym_members
+    description: Profils d'utilisateurs, avec cle de substitution user_id.
+    columns:
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_600k_fitness_detailed
+    description: Catalogue de reference des exercices (grain source, avant dedup dans dim_exercise).
+    columns:
+      - name: exercise_name
+        data_tests:
+          - not_null
+
+  - name: stg_weight_training
+    description: Seances de musculation reellement loggees.
+    columns:
+      - name: exercise_name
+        data_tests:
+          - not_null
+      - name: performed_at
+        data_tests:
+          - not_null

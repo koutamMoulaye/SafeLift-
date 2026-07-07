@@ -1,0 +1,14 @@
+# Dependances pour scripts/upload_gold_to_s3.py (etape 6/6, sous-etape 2/6).
+#
+# Installe dans un venv dedie `.venv-aws/` a la racine du repo, SEPARE du
+# `.venv/` existant (etape 2, telechargement Kaggle) : ce dernier a ete cree
+# sous WSL Ubuntu (pyvenv.cfg pointe vers /usr/bin/python3.12, chemin
+# /mnt/c/...) et son binaire `bin/python` ne resout pas dans une session
+# Git Bash (MINGW64) native Windows -- environnement different de celui qui
+# avait cree `.venv/`. Plutot que de casser `.venv/` (utilise par
+# data/download_datasets.sh, potentiellement encore utilise depuis WSL), un
+# second venv Windows natif dedie a ce script est cree isolement.
+boto3==1.43.40
+pandas==3.0.3
+psycopg2-binary==2.9.12
+pyarrow==24.0.0

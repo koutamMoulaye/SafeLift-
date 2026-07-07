@@ -1,0 +1,31 @@
+version: 2
+
+seeds:
+  - name: manual_exercise_muscle_mapping
+    description: >
+      Correspondance manuelle exercise_name -> muscle_group pour les
+      exercices de weight_training les plus frequents restant non resolus
+      apres les etapes automatiques (strict, base-name, fuzzy). Chaque ligne
+      porte une justification. Voir dim_exercise.sql et
+      data/gold/GOLD_MODEL_DECISIONS.md.
+    columns:
+      - name: normalized_exercise_base_name
+        data_tests:
+          - unique
+          - not_null
+      - name: manual_muscle_group
+        data_tests:
+          - not_null
+      - name: justification
+        data_tests:
+          - not_null
+
+  - name: demo_synthetic_risk_scenarios
+    description: >
+      TABLE SYNTHETIQUE -- scenarios fictifs pour fact_risk_score_demo_synthetic.sql,
+      jamais melanges aux vraies donnees.
+    columns:
+      - name: scenario_id
+        data_tests:
+          - unique
+          - not_null

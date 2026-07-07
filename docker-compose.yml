@@ -1,0 +1,320 @@
+# =============================================================================
+# SafeLift - Stack locale (etape 1/6 : scaffolding)
+# Services : Zookeeper + Kafka, Spark (master + worker), Airflow (LocalExecutor),
+# PostgreSQL applicatif, PostgreSQL Airflow (metadata, separe du postgres appli),
+# et un dashboard FastAPI placeholder.
+# =============================================================================
+
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER}:${AIRFLOW_POSTGRES_PASSWORD}@airflow-postgres:5432/${AIRFLOW_POSTGRES_DB}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+x-airflow-common-volumes: &airflow-common-volumes
+  - ./airflow/dags:/opt/airflow/dags
+  - airflow_logs:/opt/airflow/logs
+  # Acces au data lake medaillon (Bronze/Silver/Gold) pour les DAGs d'ingestion
+  - ./data:/opt/airflow/data
+  # Meme chemin /opt/data que sur spark-master/spark-worker (cf. plus bas) : le
+  # driver Spark soumis en mode client depuis Airflow doit voir exactement le
+  # meme chemin absolu que les executeurs pour lire/ecrire les fichiers du data
+  # lake de maniere coherente.
+  - ./data:/opt/data
+  # Scripts des jobs Spark, pour que spark-submit (mode client) puisse lire le
+  # fichier .py localement avant de soumettre le job au cluster
+  - ./spark/jobs:/opt/airflow/spark_jobs
+  # Projet dbt (modeles Gold), execute via le venv isole /opt/dbt_venv (cf. airflow/Dockerfile)
+  - ./dbt:/opt/airflow/dbt
+  # Scripts Python autonomes (pas des jobs Spark, pas des modeles dbt) : ex.
+  # scripts/fuzzy_match_exercises.py, execute dans l'environnement Airflow
+  - ./scripts:/opt/airflow/scripts
+
+services:
+  # ---------------------------------------------------------------------------
+  # Kafka (broker unique) + Zookeeper
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: safelift-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT}
+      ZOOKEEPER_TICK_TIME: 2000
+      # "ruok" (are you ok) est la commande de sonde native du protocole Zookeeper
+      # (4 lettres words) ; desactivee par defaut. L'image cp-zookeeper 7.6 ne
+      # supporte pas de variable ZOOKEEPER_4LW_COMMANDS_WHITELIST dediee, on
+      # passe donc par la propriete systeme JVM equivalente via KAFKA_OPTS.
+      KAFKA_OPTS: -Dzookeeper.4lw.commands.whitelist=ruok
+    ports:
+      - "${ZOOKEEPER_PORT_EXPOSED}:${ZOOKEEPER_CLIENT_PORT}"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/${ZOOKEEPER_CLIENT_PORT} && echo -n ruok >&3 && timeout 2 cat <&3 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - safelift-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: safelift-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID}
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_CLIENT_PORT}
+      # Deux listeners : un pour la communication inter-conteneurs (reseau docker),
+      # un pour l'acces depuis l'hote (via le port expose sur localhost)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:${KAFKA_INTERNAL_PORT},PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:${KAFKA_INTERNAL_PORT},PLAINTEXT_HOST://localhost:${KAFKA_EXTERNAL_PORT_EXPOSED}
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "${KAFKA_EXTERNAL_PORT_EXPOSED}:9093"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:${KAFKA_INTERNAL_PORT} --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    networks:
+      - safelift-network
+
+  # Conteneur "one-shot" qui cree le topic de test puis s'arrete (exit 0)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: safelift-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command: >
+      "kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --create --if-not-exists
+      --topic ${KAFKA_TEST_TOPIC} --partitions 1 --replication-factor 1
+      && echo 'Topics disponibles :'
+      && kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --list"
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Spark standalone (1 master + 1 worker)
+  # ---------------------------------------------------------------------------
+  spark-master:
+    image: apache/spark:3.5.8-python3
+    container_name: safelift-spark-master
+    restart: unless-stopped
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "0.0.0.0"]
+    ports:
+      - "${SPARK_MASTER_UI_PORT_EXPOSED}:8080"
+      - "${SPARK_MASTER_PORT_EXPOSED}:7077"
+    volumes:
+      - ./spark/jobs:/opt/spark-jobs
+      # Meme chemin que sur les conteneurs airflow-* : necessaire pour que les
+      # jobs Silver lisent/ecrivent le data lake de maniere coherente entre le
+      # driver (soumis depuis Airflow) et les executeurs.
+      - ./data:/opt/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - safelift-network
+
+  spark-worker:
+    image: apache/spark:3.5.8-python3
+    container_name: safelift-spark-worker
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
+    ports:
+      - "${SPARK_WORKER_UI_PORT_EXPOSED}:8081"
+    volumes:
+      - ./spark/jobs:/opt/spark-jobs
+      - ./data:/opt/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL applicatif (futur data warehouse / schema en etoile - etapes suivantes)
+  # ---------------------------------------------------------------------------
+  app-postgres:
+    image: postgres:16-alpine
+    container_name: safelift-app-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${APP_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${APP_POSTGRES_DB}
+    ports:
+      - "${APP_POSTGRES_PORT_EXPOSED}:5432"
+    volumes:
+      - app_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_POSTGRES_USER} -d ${APP_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL dedie a Airflow (metadata DB uniquement, SEPARE du postgres applicatif)
+  # ---------------------------------------------------------------------------
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: safelift-airflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AIRFLOW_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_POSTGRES_DB}
+    ports:
+      - "${AIRFLOW_POSTGRES_PORT_EXPOSED}:5432"
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_POSTGRES_USER} -d ${AIRFLOW_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Airflow (LocalExecutor) : init (migration DB + user admin), webserver, scheduler
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    build: ./airflow
+    image: safelift-airflow:local
+    container_name: safelift-airflow-init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      <<: *airflow-common-env
+    volumes: *airflow-common-volumes
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "airflow db migrate &&
+      (airflow users create
+      --username ${AIRFLOW_ADMIN_USERNAME}
+      --password ${AIRFLOW_ADMIN_PASSWORD}
+      --firstname ${AIRFLOW_ADMIN_FIRSTNAME}
+      --lastname ${AIRFLOW_ADMIN_LASTNAME}
+      --role Admin
+      --email ${AIRFLOW_ADMIN_EMAIL} || true)"
+    networks:
+      - safelift-network
+
+  airflow-webserver:
+    image: safelift-airflow:local
+    container_name: safelift-airflow-webserver
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      <<: *airflow-common-env
+    volumes: *airflow-common-volumes
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT_EXPOSED}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - safelift-network
+
+  airflow-scheduler:
+    image: safelift-airflow:local
+    container_name: safelift-airflow-scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      <<: *airflow-common-env
+    volumes: *airflow-common-volumes
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$$(hostname)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Dashboard de serving (FastAPI + silhouette SVG) - etape 5/6
+  # Lit uniquement le schema "gold" de app-postgres (deja alimente par dbt,
+  # cf. gold_dbt_run.py) : aucune ecriture, aucun autre service impacte.
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build: ./dashboard
+    container_name: safelift-dashboard
+    restart: unless-stopped
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+    environment:
+      APP_POSTGRES_HOST: app-postgres
+      APP_POSTGRES_PORT: 5432
+      APP_POSTGRES_DB: ${APP_POSTGRES_DB}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+    ports:
+      - "${DASHBOARD_PORT_EXPOSED}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - safelift-network
+
+networks:
+  safelift-network:
+    name: ${COMPOSE_PROJECT_NAME}-network
+
+volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  app_postgres_data:
+  airflow_postgres_data:
+  airflow_logs:

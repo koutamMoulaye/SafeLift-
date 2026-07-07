@@ -1,0 +1,170 @@
+version: 2
+
+models:
+  - name: dim_exercise
+    description: >
+      Catalogue unique d'exercices (600k_fitness_detailed + exercises de
+      weight_training non matches). Voir data/gold/GOLD_MODEL_DECISIONS.md
+      pour le taux de matching reel et la methodologie de classification
+      muscle_group (heuristique par mots-cles, non validee scientifiquement).
+    columns:
+      - name: exercise_id
+        data_tests:
+          - unique
+          - not_null
+      - name: normalized_exercise_name
+        data_tests:
+          - unique
+          - not_null
+      - name: muscle_group
+        data_tests:
+          - not_null
+      - name: is_matched
+        data_tests:
+          - not_null
+      - name: match_stage
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["catalog_strict", "base_name_match", "fuzzy_match", "manual_mapping", "unmatched"]
+
+  - name: dim_muscle
+    description: >
+      Zones musculaires distinctes + score de risque epidemiologique de base
+      (valeurs de modelisation, PAS des donnees epidemiologiques verifiees
+      pour les zones hors shoulder/knee/lower_back -- voir GOLD_MODEL_DECISIONS.md).
+    columns:
+      - name: muscle_id
+        data_tests:
+          - unique
+          - not_null
+      - name: muscle_group
+        data_tests:
+          - unique
+          - not_null
+      - name: base_epidemiological_risk
+        data_tests:
+          - not_null
+
+  - name: dim_user
+    description: >
+      Profils d'utilisateurs (gym_members). Un seul profil porte
+      is_weight_training_demo_user=true (hypothese de demonstration, voir
+      GOLD_MODEL_DECISIONS.md).
+    columns:
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_date
+    description: Calendrier genere sur la plage de dates de weight_training.performed_at.
+    columns:
+      - name: date_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: fact_workout_session
+    description: >
+      Une ligne = un exercice realise dans une seance (source unique :
+      weight_training). Grain d'agregation : (session_date, workout_name,
+      exercise_name) -- voir tests/assert_fact_workout_session_grain_unique.sql.
+    columns:
+      - name: workout_session_id
+        data_tests:
+          - unique
+          - not_null
+      - name: exercise_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_exercise')
+              field: exercise_id
+      - name: muscle_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_muscle')
+              field: muscle_id
+      - name: user_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_user')
+              field: user_id
+      - name: date_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_id
+
+  - name: fact_risk_score
+    description: >
+      Meme grain que fact_workout_session, enrichi du calcul de risque
+      deterministe (base_zone x charge_factor x volume_factor x recup_factor
+      x duree_factor, normalise 0-100). Voir GOLD_MODEL_DECISIONS.md pour la
+      justification complete de chaque facteur et des bornes de normalisation.
+    columns:
+      - name: workout_session_id
+        data_tests:
+          - unique
+          - not_null
+      - name: exercise_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_exercise')
+              field: exercise_id
+      - name: muscle_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_muscle')
+              field: muscle_id
+      - name: user_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_user')
+              field: user_id
+      - name: date_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_id
+      - name: risk_score
+        data_tests:
+          - not_null
+      - name: risk_level
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["Faible", "Modere", "Eleve"]
+
+  - name: fact_risk_score_demo_synthetic
+    description: >
+      TABLE SYNTHETIQUE/FICTIVE -- scenarios fabriques a la main pour
+      illustrer chaque seuil de risk_score, jamais melanges aux vraies
+      statistiques. Voir l'avertissement en tete de
+      fact_risk_score_demo_synthetic.sql et data/gold/GOLD_MODEL_DECISIONS.md.
+    columns:
+      - name: scenario_id
+        data_tests:
+          - unique
+          - not_null
+      - name: risk_score
+        data_tests:
+          - not_null
+      - name: risk_level
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["Faible", "Modere", "Eleve"]
+      - name: is_synthetic_demo
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [true]

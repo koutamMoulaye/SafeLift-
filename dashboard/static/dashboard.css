@@ -1,0 +1,486 @@
+/* SafeLift Dashboard — theme sombre "app tracker" moderne.
+   Vanilla CSS, pas de framework. Demo jury (pas d'optimisation mobile). */
+
+:root {
+  /* --- Palette sombre centralisee --- */
+  --bg: #0d1117;
+  --bg-card: #161b23;
+  --bg-card-alt: #1c2333;
+  --border: #2a3346;
+  --text-primary: #e6e8ec;
+  --text-muted: #8b93a7;
+
+  /* Accents "SaaS moderne" (utilises pour distinguer les cards KPI entre
+     elles, independamment du code couleur de risque) */
+  --accent-purple: #8b7cff;
+  --accent-orange: #ff9457;
+  --accent-teal: #4fd1c5;
+
+  /* Code couleur de risque (conserve depuis les iterations precedentes,
+     tons legerement adaptes pour rester lisibles sur fond sombre) */
+  --color-faible: #2ecc71;
+  --color-modere: #f5a623;
+  --color-eleve: #f0483e;
+  --color-no-data: #3a4152;
+
+  --radius-card: 14px;
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.hidden { display: none !important; }
+
+.demo-banner {
+  background: var(--color-modere);
+  color: #2a1c00;
+  font-weight: 600;
+  text-align: center;
+  padding: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+header {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 20px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+header h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.controls select {
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card-alt);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  max-width: 340px;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 14px;
+  color: var(--text-primary);
+}
+
+.placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* --- Rangee de cards KPI --- */
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+}
+
+.kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 3px solid var(--kpi-accent, var(--accent-purple));
+}
+
+.kpi-card .kpi-label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kpi-card .kpi-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.kpi-card .kpi-sub {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+/* Card jauge : contenu centre, pas d'empilement label/valeur classique */
+.kpi-card.kpi-gauge-card {
+  align-items: center;
+  justify-content: center;
+}
+
+#gauge-svg {
+  width: 110px;
+  height: 110px;
+}
+
+.gauge-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 10;
+}
+
+.gauge-arc {
+  fill: none;
+  stroke-width: 10;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 60px 60px;
+  transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;
+}
+
+.gauge-number {
+  font-size: 1.5rem;
+  font-weight: 700;
+  fill: var(--text-primary);
+}
+
+.gauge-level-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-align: center;
+}
+
+/* --- Grille principale : carte corporelle + panneau lateral --- */
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.bodymap-panel, .side-panel > div {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px;
+}
+
+.bodymap-panel { text-align: center; }
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+#silhouette {
+  width: 100%;
+  max-width: 280px;
+}
+
+/* --- Zones de la carte corporelle --- */
+
+.decorative {
+  fill: #232b3d;
+  stroke: #333e56;
+  stroke-width: 1;
+}
+
+/* Lignes suggerant la sangle abdominale : purement decoratives (pas de
+   data-muscle, pas d'evenement de clic), au-dessus de la zone "abs" */
+.decorative-line {
+  stroke: rgba(13, 17, 23, 0.35);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.body-outline {
+  fill: #1a2130;
+  stroke: #2a3346;
+  stroke-width: 1;
+}
+
+.zone {
+  fill: var(--color-no-data);
+  stroke: none;
+  cursor: pointer;
+  transition: fill 0.2s ease, filter 0.2s ease;
+}
+
+.zone-soft {
+  fill-opacity: 0.88;
+  stroke: rgba(13, 17, 23, 0.5);
+  stroke-width: 0.75;
+}
+
+.zone:hover {
+  filter: brightness(1.2) drop-shadow(0 0 4px rgba(255, 255, 255, 0.4));
+}
+
+.zone.selected {
+  filter: brightness(1.25) drop-shadow(0 0 6px rgba(255, 255, 255, 0.7));
+}
+
+.zone-outline {
+  stroke: #6b7690;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  fill-opacity: 0.6;
+}
+
+.legend {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+  text-align: left;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.swatch {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* --- Panneau "zones sensibles" --- */
+
+.sensitive-zone-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sensitive-zone-row:last-child { border-bottom: none; }
+
+.sensitive-zone-row .zone-name {
+  font-weight: 600;
+  flex: 0 0 140px;
+}
+
+.sensitive-zone-row .zone-reason {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  flex: 1 1 auto;
+}
+
+.level-badge {
+  display: inline-block;
+  padding: 3px 11px;
+  border-radius: 12px;
+  color: #0d1117;
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex: 0 0 auto;
+}
+
+/* --- Detail d'une zone (au clic) --- */
+
+.zone-detail .score-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 14px;
+  color: #0d1117;
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin: 4px 0 14px;
+}
+
+.factor-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.factor-row {
+  display: grid;
+  grid-template-columns: 190px 1fr 55px;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.factor-row .factor-track {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.factor-row .factor-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: var(--accent-teal);
+  transition: width 0.3s ease;
+}
+
+.factor-row .factor-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.zone-detail .meta-note {
+  margin-top: 12px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+#history-chart {
+  width: 100%;
+  max-width: 100%;
+  height: 130px;
+}
+
+#history-chart .history-line {
+  fill: none;
+  stroke: var(--accent-purple);
+  stroke-width: 2;
+}
+
+#history-chart .history-axis {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+/* --- Simulateur what-if (Feature A) --- */
+
+.simulator-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px;
+}
+
+#simulator-form-wrapper {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-top: 8px;
+}
+
+.simulator-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.simulator-form label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.simulator-form select,
+.simulator-form input[type="range"] {
+  width: 100%;
+}
+
+.simulator-form select {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card-alt);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.btn-primary {
+  margin-top: 16px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent-teal);
+  color: #0d1117;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: filter 0.2s ease;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.sim-result {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+  min-height: 80px;
+}
+
+.sim-message {
+  margin: 0 0 14px;
+  font-size: 0.95rem;
+}
+
+.sim-message .sim-delta-up { color: var(--color-eleve); font-weight: 700; }
+.sim-message .sim-delta-down { color: var(--color-faible); font-weight: 700; }
+.sim-message .sim-delta-flat { color: var(--text-muted); font-weight: 700; }
+
+/* Surcouche "hypothese" sur une zone de la silhouette : contour pointille
+   distinct, AJOUTE par-dessus le remplissage plein existant (qui continue
+   de representer le risque REEL) -- ne modifie ni la geometrie ni la
+   couleur de remplissage de la zone, uniquement son trait. */
+.zone.sim-highlight {
+  stroke-width: 3.5;
+  stroke-dasharray: 6 4;
+}

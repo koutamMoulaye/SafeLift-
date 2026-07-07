@@ -1,0 +1,28 @@
+# Dependances Python additionnelles installees dans l'image Airflow custom
+# (voir airflow/Dockerfile). Utilisees par les DAGs pour piloter Kafka et Spark.
+apache-airflow-providers-apache-kafka==1.6.1
+apache-airflow-providers-apache-spark==4.11.3
+# apache-airflow-providers-apache-spark tire pyspark sans version epinglee : sans
+# cette ligne explicite, pip installe le pyspark le plus recent (4.1.2 constate),
+# incompatible avec le cluster Spark standalone du docker-compose (image
+# apache/spark:3.5.8-python3). spark-submit doit avoir la MEME version majeure/
+# mineure que le cluster cible pour parler le meme protocole RPC.
+pyspark==3.5.8
+
+# Lecture des CSV bruts et ecriture Parquet pour l'ingestion Bronze
+# (airflow/dags/bronze_ingestion.py)
+# pandas pin sur 2.1.x (et non 2.2.x) car apache-airflow-providers-google et
+# apache-airflow-providers-snowflake, deja presents dans l'image de base
+# apache/airflow, exigent pandas<2.2,>=2.1.2 : passer en 2.2.x provoque un
+# conflit de dependances au moment du build de l'image.
+pandas==2.1.4
+pyarrow==18.1.0
+
+# Fuzzy matching des noms d'exercice (etape 3 du pipeline de matching
+# dim_exercise, apres les 2 etapes de normalisation stricte -- voir
+# airflow/dags/gold_dbt_run.py et scripts/fuzzy_match_exercises.py). Ce n'est
+# pas un job Spark (donnees trop petites pour justifier une distribution) :
+# script Python simple execute directement dans le conteneur Airflow.
+# psycopg2-binary est deja fourni par apache-airflow-providers-postgres
+# (bundle par defaut de l'image apache/airflow), pas besoin de le repeter ici.
+rapidfuzz==3.10.1

@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Tables Silver rechargees telles quelles dans Postgres (schema "raw")
+      par le job Spark spark/jobs/load_silver_to_postgres.py, en amont de
+      dbt. Ce ne sont PAS des tables source "brutes" au sens Bronze : elles
+      ont deja ete nettoyees/normalisees en Silver (voir
+      data/silver/CLEANING_LOG.md). Le prefixe "raw" designe ici uniquement
+      leur statut vis-a-vis de dbt (avant tout modele dbt), pas leur statut
+      dans le data lake medaillon.
+    schema: raw
+    tables:
+      - name: silver_600k_fitness_summary
+        description: Un programme d'entrainement (grain = 1 programme).
+      - name: silver_600k_fitness_detailed
+        description: >
+          Detail exercice/semaine/jour d'un programme (grain = 1 exercice
+          prescrit dans un programme). Sert de catalogue de reference pour
+          dim_exercise, PAS de source de faits.
+      - name: silver_gym_members
+        description: Profils d'utilisateurs de la plateforme (grain = 1 utilisateur).
+      - name: silver_weight_training
+        description: >
+          Seances de musculation reellement loggees (grain = 1 exercice
+          realise dans une seance). Source unique de fact_workout_session.
+      - name: fuzzy_exercise_matches
+        description: >
+          Candidats de fuzzy matching (rapidfuzz) entre exercise_name de
+          weight_training et le catalogue 600k_fitness_detailed, calcules par
+          scripts/fuzzy_match_exercises.py (hors dbt : dbt-postgres ne
+          supporte pas les modeles Python). Ecrase et recalcule a chaque run
+          du DAG gold_dbt_run. Contient TOUS les scores (y compris sous le
+          seuil de 85% retenu), filtres dans dim_exercise.sql pour audit.

@@ -1,0 +1,11 @@
+# Dependances pour le telechargement des datasets Kaggle (data/download_datasets.sh)
+#
+# kagglesdk est pin sur 0.1.30 (et non la derniere version 0.1.32/0.1.31) car ces
+# deux dernieres versions contiennent un import casse dans leur propre wheel PyPI
+# (kagglesdk/competitions/types/host_service.py importe
+# kagglesdk.competitions.legacy.types.legacy_competition_host_service, un module
+# absent du package publie) : ModuleNotFoundError des l'import de `kaggle`.
+# 0.1.30 est la plus recente version sans ce module casse, et reste compatible
+# avec la contrainte de kaggle==2.2.3 (Requires-Dist: kagglesdk<1.0,>=0.1.30).
+kaggle==2.2.3
+kagglesdk==0.1.30

@@ -1,0 +1,10 @@
+scenario_id,scenario_label,muscle_group,base_zone,charge_factor,volume_factor,recup_factor,duree_factor,notes
+1,Faible - Seance normale zone chest,chest,0.10,1.0,1.0,1.0,1.0,Aucun facteur de risque declenche - situation de reference.
+2,Faible - Volume legerement sous la moyenne,arms,0.10,1.0,0.8,1.0,1.0,Volume hebdomadaire sous la moyenne historique - risque tres faible.
+3,Faible - Leger exces de charge isole,back,0.10,1.3,1.0,1.0,1.0,Hausse de charge >10% mais volume et recuperation normaux.
+4,Modere - Charge et volume eleves zone epaule,shoulder,0.25,1.0,1.5,1.0,1.0,Volume hebdomadaire 1.5x la moyenne historique sur une zone a risque de base eleve.
+5,Modere - Charge en hausse zone genou,knee,0.20,1.3,1.5,1.0,1.0,Hausse de charge >10% combinee a un volume au-dessus de la moyenne.
+6,Modere - Charge et volume eleves zone pectoraux,chest,0.10,1.3,2.0,1.4,1.0,Cumul de 3 facteurs sur une zone a risque de base faible - reste moderee grace au faible base_zone.
+7,Eleve - Cumul charge/volume/recuperation zone epaule,shoulder,0.25,1.3,2.0,1.4,1.0,Zone a risque de base maximal + hausse de charge + volume au plafond + recuperation <48h.
+8,Eleve - Cumul charge/volume zone genou,knee,0.20,1.3,2.0,1.4,1.0,Meme cumul de facteurs que le scenario 7 mais sur une zone genou (base_zone plus faible).
+9,Eleve - Cas extreme tous facteurs zone epaule,shoulder,0.25,1.3,2.0,1.4,1.2,"Cas extreme fictif cumulant TOUS les facteurs a leur valeur maximale (y compris duree_factor, qui ne se declenche jamais sur les donnees reelles de ce projet) - illustre le plafond theorique de la formule, score sature a 100."

@@ -1,0 +1,45 @@
+
+name: safelift
+version: "1.0.0"
+config-version: 2
+profile: safelift
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+analysis-paths: []
+seed-paths: ["seeds"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# --- Materialisations ---
+# staging : vues (couche fine, pas de duplication de stockage, tables sources
+#           deja petites - inutile de materialiser en table)
+# marts   : tables (dimensions/faits requetes par le futur dashboard/API,
+#           mieux vaut les avoir precalculees qu'en vue recalculee a chaque requete)
+models:
+  safelift:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: gold
+      +materialized: table
+
+# Seeds (donnees de reference statiques, ex. mapping manuel exercice ->
+# muscle_group) : schema staging, au meme niveau que les vues staging
+# puisqu'elles alimentent les memes modeles marts.
+seeds:
+  safelift:
+    +schema: staging
+
+# Bornes theoriques de risk_score, partagees entre fact_risk_score.sql et
+# fact_risk_score_demo_synthetic.sql (evite la duplication de "nombres
+# magiques" entre les deux modeles). Voir data/gold/GOLD_MODEL_DECISIONS.md
+# pour la justification complete du calcul.
+vars:
+  risk_score_min_raw: 0.05
+  risk_score_max_raw: 0.86
