@@ -1,0 +1,132 @@
+# SafeLift — etape 6/6, sous-etape 3/6 : CI/CD Terraform (S3 + Athena).
+#
+# Contrainte structurante (voir terraform/AWS_LAB_CONSTRAINTS.md et
+# .github/workflows/README.md) : le compte AWS est un compte AWS Academy
+# Learner Lab, avec des credentials TEMPORAIRES (expiration en quelques
+# heures). Ce pipeline NE FAIT JAMAIS de `terraform apply` automatique --
+# uniquement `fmt`/`init`/`validate`/`plan`. L'apply reel reste TOUJOURS
+# declenche manuellement en session par l'utilisateur (voir README.md du
+# dossier workflows pour la procedure).
+
+name: Terraform CI (SafeLift)
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+  # Declenchement manuel depuis l'onglet Actions de GitHub, utile pour tester
+  # ce workflow sans dependre d'un vrai push/PR touchant terraform/**.
+  workflow_dispatch: {}
+
+# "pull-requests: write" est necessaire pour poster le commentaire de resume
+# du plan sur la pull request (etape optionnelle, voir plus bas).
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # Alignee sur `required_version >= 1.5.0` dans terraform/versions.tf.
+  TF_VERSION: "1.5.7"
+
+jobs:
+  terraform:
+    name: Validate & Plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout du depot
+        uses: actions/checkout@v4
+
+      - name: Installation de Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Verifie que le code est bien formate (memes regles qu'en local via
+      # `terraform fmt`). Echoue explicitement si non -- c'est volontaire,
+      # ce n'est pas un probleme de credentials AWS mais une vraie erreur de
+      # style a corriger avant de merger.
+      - name: Verification du formatage (terraform fmt)
+        run: |
+          terraform fmt -check -recursive -diff || {
+            echo "::error::Code Terraform mal formate. Lancer 'terraform fmt -recursive' en local dans terraform/ puis recommitter." >&2
+            exit 1
+          }
+
+      # Backend local (voir terraform/versions.tf) : init ne necessite AUCUN
+      # acces AWS reel, juste le telechargement du provider hashicorp/aws.
+      - name: Initialisation Terraform (aucun acces AWS requis)
+        run: terraform init -input=false
+
+      # Vrai garde-fou qualite de ce pipeline : validation de la syntaxe et
+      # de la coherence interne (types, references entre ressources...) sans
+      # jamais contacter l'API AWS. DOIT toujours reussir independamment de
+      # l'etat des credentials AWS.
+      - name: Validation Terraform (aucun acces AWS requis)
+        run: terraform validate
+
+      # Le provider AWS (terraform/versions.tf) reference explicitement le
+      # profil nomme "awslearnerlab" (coherent avec l'usage local et
+      # scripts/upload_gold_to_s3.py) : on materialise ce meme profil ici a
+      # partir des secrets GitHub, plutot que de modifier versions.tf pour
+      # cette seule contrainte CI. Voir README.md pour la procedure d'ajout
+      # des secrets.
+      - name: Configuration des credentials AWS (profil awslearnerlab)
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials <<CREDS
+          [awslearnerlab]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token=${{ secrets.AWS_SESSION_TOKEN }}
+          CREDS
+          chmod 600 ~/.aws/credentials
+
+      # continue-on-error volontaire : un token Learner Lab expire est un cas
+      # NORMAL et FREQUENT sur ce type de compte (session limitee a quelques
+      # heures) -- ce n'est pas un bug du code Terraform, donc ca ne doit
+      # jamais faire echouer tout le pipeline ni bloquer une pull request
+      # pour une raison hors du controle du code. La vraie verification de
+      # qualite du code est deja passee (fmt + validate ci-dessus).
+      - name: Terraform plan (echec tolere si credentials AWS expirees)
+        id: plan
+        continue-on-error: true
+        run: |
+          terraform plan -no-color -input=false | tee /tmp/plan_output.txt
+
+      - name: Rapport clair du resultat du plan
+        run: |
+          if [ "${{ steps.plan.outcome }}" = "success" ]; then
+            echo "✅ terraform plan a reussi -- voir le resume des changements ci-dessus."
+          else
+            echo "::warning::terraform plan a echoue -- tres probablement des credentials AWS Learner Lab expires (contrainte connue de ce compte, session limitee a quelques heures, voir terraform/AWS_LAB_CONSTRAINTS.md). Rafraichir les secrets GitHub (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN) avec des credentials frais du Lab puis relancer ce workflow. Cet echec ne bloque PAS la pull request : fmt/init/validate (le vrai garde-fou qualite) ont deja reussi."
+          fi
+
+      # Bonus non bloquant : commente la PR avec le resume du plan quand il a
+      # reussi. Si le plan a echoue (credentials expirees), pas de commentaire
+      # -- le message d'avertissement de l'etape precedente suffit.
+      - name: Commentaire du resume de plan sur la pull request
+        if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let output = fs.readFileSync('/tmp/plan_output.txt', 'utf8');
+            const maxLength = 60000; // marge sous la limite de 65536 caracteres d'un commentaire GitHub
+            if (output.length > maxLength) {
+              output = output.slice(0, maxLength) + '\n\n... (sortie tronquee, voir les logs complets du workflow)';
+            }
+            const body = `#### Résultat de \`terraform plan\` (SafeLift)\n\n<details><summary>Afficher le plan</summary>\n\n\`\`\`\n${output}\n\`\`\`\n\n</details>`;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
