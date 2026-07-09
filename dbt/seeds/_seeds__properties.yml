@@ -29,3 +29,21 @@ seeds:
         data_tests:
           - unique
           - not_null
+
+  - name: dim_gym_seed
+    description: >
+      Salles SafeLift -- donnees 100% FICTIVES (Jalon 2, sous-etape 1/5,
+      streaming affluence). Voir dim_gym.sql et
+      data/gold/GOLD_MODEL_DECISIONS.md section 9.
+    columns:
+      - name: gym_id
+        data_tests:
+          - unique
+          - not_null
+      - name: gym_name
+        data_tests:
+          - unique
+          - not_null
+      - name: capacity_max
+        data_tests:
+          - not_null

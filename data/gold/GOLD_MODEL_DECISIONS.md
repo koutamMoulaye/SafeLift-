@@ -429,6 +429,380 @@ vrai moteur de calcul.
   visuellement — anticipe dans le design (table separee) mais pas encore
   implemente cote UI.
 
+## 9. dim_gym — salles FICTIVES pour le Jalon 2 (streaming affluence)
+
+**Contexte** : le Jalon 2 de la certification (Bloc 2, pipelines temps
+reel) ajoute un flux de streaming d'affluence par salle de sport, destine a
+etre consomme en Spark Structured Streaming (sous-etape suivante, non
+traitee ici). Aucun dataset Kaggle d'affluence de salle de sport en temps
+reel n'existe pour un projet de ce type — le cahier des charges du Jalon 2
+a explicitement retenu un **simulateur custom** plutot qu'un dataset
+synthetique externe pour ce flux (a la difference de Bronze/Silver/Gold du
+Jalon 1, entierement bases sur de vrais datasets Kaggle).
+
+**`dim_gym` (`dbt/models/marts/dim_gym.sql`, alimentee par le seed
+`dbt/seeds/dim_gym_seed.csv`) contient 5 salles 100% FICTIVES** : nom,
+ville, quartier et capacite maximale theorique inventes pour ce projet,
+choisis pour rester credibles (grandes villes francaises, capacites
+plausibles pour une salle de sport urbaine, 90 a 180 personnes) mais **ne
+correspondent a aucun etablissement reel.**
+
+| gym_id | gym_name | Ville | Quartier | capacity_max |
+|---|---|---|---|---|
+| 1 | SafeLift Bastille | Paris | Bastille (11e) | 140 |
+| 2 | SafeLift Part-Dieu | Lyon | Part-Dieu | 180 |
+| 3 | SafeLift Vieux-Port | Marseille | Vieux-Port | 100 |
+| 4 | SafeLift Capitole | Toulouse | Capitole | 130 |
+| 5 | SafeLift Chartrons | Bordeaux | Chartrons | 90 |
+
+**Pourquoi un seed dbt et pas un modele Bronze/Silver** : il n'existe aucune
+donnee source a nettoyer/transformer ici (contrairement aux 4 tables
+Bronze du Jalon 1) — le seed EST directement la donnee de reference, meme
+pattern que `dbt/seeds/demo_synthetic_risk_scenarios.csv` pour
+`fact_risk_score_demo_synthetic.sql` (etape 4/6).
+
+**`scripts/simulate_gym_occupancy.py` lit `gold.dim_gym` une seule fois au
+demarrage** (table statique, pas besoin de la relire a chaque cycle) pour
+connaitre la liste des salles et leur `capacity_max`, puis publie un
+message JSON par salle toutes les 5 a 10 secondes (configurable) sur le
+topic Kafka `safelift-gym-occupancy` — voir le docstring du script pour le
+detail du pattern d'affluence simule (heures de pointe 7h-9h/18h-21h en
+semaine, plateau plus etale le week-end, nuit quasi vide). **Ce pattern est
+FICTIF/illustratif, pas une vraie donnee d'affluence mesuree** — documente
+dans le script lui-meme.
+
+**Meme logique de documentation que `dim_muscle`/`fact_risk_score_demo_synthetic`** :
+les donnees fictives sont marquees comme telles a la fois dans le code
+(commentaire en tete de `dim_gym.sql` et de `simulate_gym_occupancy.py`) et
+dans ce document, pour qu'elles ne soient jamais presentees par erreur
+comme des donnees reelles dans le rapport de certification.
+
+## 10. gym_occupancy_live — consumer Spark Structured Streaming (Jalon 2, sous-etape 2/5)
+
+**Contexte** : suite de la section 9 — `scripts/simulate_gym_occupancy.py`
+publie en continu sur le topic Kafka `safelift-gym-occupancy`
+(`spark/jobs/stream_gym_occupancy.py` en est le consumer). Decision deja
+actee : approche simple, Spark Structured Streaming maintient l'**etat
+courant** (dernier message connu par salle) dans une table Postgres,
+**PAS de fenetre temporelle/agregation historique a ce stade** — la table
+`gold.gym_occupancy_live` contient donc toujours exactement une ligne par
+salle de `dim_gym` (3 a 5 lignes), ecrasee a chaque nouveau message.
+
+**Cette table n'est PAS geree par dbt** (contrairement au reste du schema
+`gold`) : elle est creee et maintenue directement par le job Spark
+(`CREATE TABLE IF NOT EXISTS` via psycopg2 au demarrage, puis upsert a
+chaque micro-batch) — un run dbt complet (`dbt run`) ne la touche jamais et
+ne la supprime jamais.
+
+### `startingOffsets=latest`
+
+Au (re)demarrage du job, seuls les NOUVEAUX messages sont consommes ;
+l'historique deja publie sur le topic avant le demarrage est ignore.
+**Justification** : ce job maintient un etat courant, pas un historique a
+preserver — rejouer tout l'historique a chaque redemarrage n'apporterait
+rien de plus (les vieux messages seraient de toute facon ecrases par les
+plus recents des le premier micro-batch concernant chaque salle) et
+retarderait inutilement la fraicheur de la table pendant tout le
+rattrapage. **Consequence assumee** : les messages publies pendant que ce
+job est arrete (redemarrage volontaire, crash, deploiement) sont
+**definitivement perdus** — juge acceptable ici puisqu'aucune valeur n'est
+tiree de connaitre precisement l'occupation a un instant passe non observe
+pour un etat courant (a la difference d'un historique, hors perimetre de
+cette sous-etape).
+
+### Upsert : `INSERT ... ON CONFLICT (gym_id) DO UPDATE`, pas DELETE+INSERT
+
+Le writer JDBC natif de Spark (`DataFrameWriter.jdbc`) ne supporte que
+`append`/`overwrite`/`ignore`/`errorifexists` — aucune notion d'upsert.
+Deux options envisagees :
+1. **DELETE puis INSERT** (option initialement suggeree) : necessiterait 2
+   instructions SQL distinctes explicitement enveloppees dans la meme
+   transaction pour garantir l'atomicite (pas de fenetre ou la ligne
+   n'existe plus).
+2. **`INSERT ... ON CONFLICT (gym_id) DO UPDATE SET ...`** (retenue) :
+   primitive Postgres atomique **en une seule instruction**, strictement
+   equivalente en resultat final a l'option 1, mais plus simple a lire et a
+   maintenir.
+
+Execution : chaque micro-batch est minuscule (au plus une ligne par salle
+de `dim_gym`, donc 3 a 5 lignes) — `foreachBatch` s'execute de toute facon
+sur le driver Spark, donc un simple `.collect()` suffit largement, pas
+besoin de repasser par un ecrivain JDBC distribue pour un tel volume.
+L'upsert lui-meme est fait via `psycopg2` (pas via JDBC/py4j), meme
+raisonnement que `ensure_raw_schema_exists()` dans
+`spark/jobs/load_silver_to_postgres.py` (driver JDBC ajoute par
+`--packages` invisible d'un `DriverManager` JDBC "nu").
+
+### `charge_category` — seuils et justification
+
+| `occupancy_rate` | `charge_category` |
+|---|---|
+| < 40% | Faible |
+| 40% a 70% | Moderee |
+| > 70% | Elevee |
+
+Seuils simples et documentes (dans le meme esprit que les seuils
+`risk_level` 33/66 de `fact_risk_score.sql`, section 8) — **pas issus d'une
+etude/norme citee**, choisis pour rester credibles : sous 40% une salle de
+sport est generalement consideree confortable (peu d'attente sur les
+equipements), entre 40% et 70% elle se remplit mais reste utilisable, au-dela
+de 70% le seuil de "quasi-sature" est couramment retenu pour un lieu
+recevant du public (file d'attente probable sur les equipements les plus
+demandes). **Hypothese de modelisation, pas une donnee mesuree/verifiee** —
+meme statut que `base_epidemiological_risk` (section 4) : a traiter avec la
+meme prudence dans le rapport de certification si ces seuils sont
+presentes comme une recommandation.
+
+### Absence d'operateur stateful — impact sur le checkpoint
+
+Le job ne fait ni agregation, ni watermark, ni jointure : chaque message
+est traite independamment (parse -> calcul -> upsert), aucun etat
+intermediaire n'est accumule entre micro-batches par Spark lui-meme (l'etat
+"courant" vit dans Postgres, pas dans le checkpoint). Le checkpoint Spark
+ne contient donc que les offsets Kafka consommes et le log de commit du
+sink `foreachBatch`, **geres entierement par le driver**. Consequence
+pratique : contrairement a `silver_transformation.py` (ecriture Parquet
+partagee entre driver et executeurs, necessitant
+`spark.hadoop.fs.permissions.umask-mode=000` pour contourner un mismatch
+d'UID), **aucun repertoire n'a besoin d'etre partage entre le conteneur
+driver (`spark-streaming-gym`) et `spark-worker`** ici — le volume de
+checkpoint (`spark_streaming_checkpoints`, `docker-compose.yml`) n'est
+monte que sur le conteneur driver.
+
+### Gestion des messages JSON malformes
+
+`from_json` (schema Spark explicite, pas d'inference) est en mode
+PERMISSIVE par defaut et **ne leve jamais d'exception** — un message
+malforme produit un struct entierement `null` plutot que de faire planter
+le job. Chaque micro-batch filtre explicitement les lignes avec un champ
+requis `null` (`gym_id`, `current_occupancy`, `capacity`,
+`parsed_timestamp`, `occupancy_rate`, `charge_category`) avant l'upsert, et
+logue un avertissement avec le compte de messages ignores — **le stream
+continue sans interruption**, aucune exception n'est laissee remonter
+jusqu'a faire planter la query Structured Streaming. Meme philosophie pour
+une erreur de connexion/ecriture Postgres au sein d'un micro-batch : logue
+(`logger.exception`, stack complete) mais jamais relancee, le micro-batch
+suivant retentera naturellement une ecriture a jour quelques secondes plus
+tard.
+
+## 11. Inputs utilisateur temps reel — union weight_training + realtime_user_sessions (Jalon 2, sous-etape 3/5)
+
+**Contexte** : ajout d'un flux d'ecriture temps reel (l'utilisateur logue
+une seance via le dashboard) en plus des deux flux de lecture deja en place
+(Jalon 1 batch, Jalon 2 streaming affluence). **Decision deja actee, non
+renegociee** : UNE SEULE formule de calcul de `risk_score` (celle deja en
+dbt, `fact_risk_score.sql`) — aucun recalcul cote consumer, qui se contente
+de faire entrer la donnee dans le pipeline puis de declencher le run dbt
+existant.
+
+### `raw.realtime_user_sessions` — table et grain
+
+Creee par `scripts/consume_user_inputs.py` (psycopg2, `CREATE TABLE IF NOT
+EXISTS`, PAS un modele dbt ni un job Spark) :
+
+```sql
+CREATE TABLE raw.realtime_user_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    exercise_name TEXT NOT NULL,
+    lifted_weight_kg DOUBLE PRECISION NOT NULL,
+    reps INTEGER NOT NULL,
+    sets INTEGER NOT NULL,
+    duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+    performed_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+```
+
+**Grain = 1 ligne par exercice complet d'une seance** (sets/reps DEJA
+agreges, le formulaire ne capture pas chaque repetition individuellement)
+— DIFFERENT du grain source de `silver_weight_training` (1 ligne par SET).
+`user_id` est ici **OBLIGATOIRE** (contrairement a `weight_training`, qui
+n'en a nativement aucun) : l'API `POST /users/{user_id}/sessions` verifie
+que l'utilisateur existe dans `gold.dim_user` AVANT de publier sur Kafka.
+
+### Decouplage evenementiel : l'API ne write JAMAIS en base
+
+`POST /users/{user_id}/sessions` (dashboard/main.py) **PUBLIE** l'evenement
+sur Kafka (`safelift-user-inputs`) et s'arrete la — c'est le point
+architectural explicitement demande a demontrer. L'API ne connait meme pas
+le schema de `raw.realtime_user_sessions` (aucun `import psycopg2`
+supplementaire pour cette route, uniquement le producteur Kafka deja
+present pour le simulateur d'affluence). Erreurs Kafka gerees explicitement
+(callback de livraison + `flush(timeout=5)` verifie) : file d'attente
+pleine ou broker injoignable -> **HTTP 503** avec message clair, jamais un
+succes trompeur.
+
+### Union des sources : ou et comment
+
+Le modele staging concerne par l'union est **`stg_workout_sessions_unified.sql`**
+(nouveau, pas une modification de `stg_weight_training.sql`) :
+
+- `stg_weight_training.sql` reste **INCHANGE** (grain per-set original) —
+  choix deliberer : il est aussi consomme par `dim_exercise.sql` (comptage
+  d'occurrences pour choisir la graphie representative d'un
+  `normalized_exercise_name`) et `dim_date.sql`. Agreger `stg_weight_training`
+  directement aurait modifie l'`occurrence_count` utilise par
+  `dim_exercise.sql` pour departager les graphies (moins de lignes ->
+  comptages differents -> risque de deplacer silencieusement le
+  "gagnant" des ex-aequo), remettant en cause le taux de matching deja
+  verifie et documente (38.3%->90.1%, section 2). **Risque identifie et
+  evite explicitement**, pas par accident.
+- `stg_realtime_user_sessions.sql` (nouveau) : lit `raw.realtime_user_sessions`,
+  applique les MEMES macros de normalisation
+  (`normalize_exercise_name`/`normalize_exercise_base_name`) que
+  `stg_weight_training.sql` — garantit que le matching vers `dim_exercise`
+  (base sur `normalized_exercise_name`) s'applique de facon identique aux
+  deux sources, sans code duplique.
+- `stg_workout_sessions_unified.sql` (nouveau) : agrege `stg_weight_training`
+  au grain par-exercice (meme logique qu'avant, simplement deplacee depuis
+  `fact_workout_session.sql`) avec `user_id = NULL`, UNION ALL avec
+  `stg_realtime_user_sessions` (deja au bon grain, `user_id` reel).
+- `fact_workout_session.sql` : simplifie (n'agrege plus rien lui-meme,
+  selectionne directement depuis le modele unifie),
+  `coalesce(u.user_id, demo_user.user_id) as user_id` remplace l'ancien
+  `cross join demo_user` inconditionnel — **memes resultats pour les 2164
+  lignes weight_training existantes** (coalesce(NULL, demo_id) =
+  demo_id), verifie par re-execution complete du pipeline (0 changement de
+  row count).
+- `dim_exercise.sql` continue de lire `stg_weight_training` et
+  `stg_600k_fitness_detailed` **DIRECTEMENT** (pas le modele unifie) —
+  meme raison que ci-dessus.
+
+### Grain de fact_workout_session : `user_id` ajoute
+
+**Grain change** : `(session_date, workout_name, exercise_id)` ->
+`(user_id, session_date, workout_name, exercise_id)`. Necessaire des lors
+que plusieurs utilisateurs REELS distincts peuvent contribuer des lignes
+(avant cette sous-etape, tous les faits appartenaient au meme demo_user,
+le grain sans `user_id` etait suffisant par construction).
+`tests/assert_fact_workout_session_grain_unique.sql` mis a jour en
+consequence. **Limite assumee, non corrigee** : si un meme utilisateur
+soumet 2 seances temps reel sur le meme exercice le meme jour calendaire,
+les 2 lignes restent DISTINCTES dans le modele unifie (contrairement a
+`weight_training`, qui agrege par jour) — violerait potentiellement le
+test de grain si `workout_name` coincidait aussi (tres improbable :
+`workout_name='Séance temps réel'` pour toute ligne realtime, namespace
+disjoint des vrais libelles de programme weight_training). Non traite ici
+(scenario de test = une seule seance soumise), a corriger si le besoin
+reel de plusieurs seances/jour emerge.
+
+### BUG REEL trouve et corrige : dim_date trop etroite
+
+`dim_date.sql` generait un calendrier borne par le min/max de
+`weight_training.performed_at` UNIQUEMENT (2015-2018). Une seance saisie
+en 2026 tombe hors de cette plage -> `date_id` NULL apres le LEFT JOIN dans
+`fact_workout_session.sql` -> `week_start_date` NULL dans
+`fact_risk_score.sql` -> le LEFT JOIN sur `week_start_date` (deux NULL ne
+sont JAMAIS egaux en SQL) ne retrouve plus la ligne agregee correspondante
+-> `charge_factor`/`volume_factor` NULL -> `risk_score` NULL,
+**silencieusement**, pour TOUTE seance temps reel. Corrige en unionnant
+`stg_weight_training` et `stg_realtime_user_sessions` avant de calculer
+min/max dans `dim_date.sql`. **Trouve en testant reellement** (pas en
+relecture de code) : la premiere execution de bout en bout avec une vraie
+seance aurait sinon produit un `risk_score` NULL, qui aurait probablement
+echoue silencieusement le test `not_null` sur `fact_risk_score.risk_score`
+— verifie a posteriori que le fix elimine bien le probleme (voir
+"Resultats d'execution" ci-dessous, `dbt test` 72/72 avec la ligne reelle
+en base).
+
+### Formulaire du dashboard restreint a un `<select>`, pas un champ texte libre
+
+`exercise_name` DOIT correspondre a un `normalized_exercise_name` deja
+connu de `gold.dim_exercise`, sans quoi le LEFT JOIN dans
+`fact_workout_session.sql` laisse `exercise_id`/`muscle_id` NULL pour
+cette ligne (orpheline) — `risk_score` ne pourrait pas etre calcule pour
+cette seance (meme classe de probleme que le bug dim_date ci-dessus, mais
+sur le matching exercice plutot que la date). **Mitigation cote UI, pas
+cote serveur** : le formulaire "Logger une seance" (`dashboard/static/index.html`/`dashboard.js`)
+reutilise `GET /users/{user_id}/exercises` (deja utilise par le simulateur
+what-if, Feature A) pour peupler un `<select>` limite aux exercices DEJA
+pratiques par cet utilisateur — garantit par construction un match. **Ni
+l'API (`POST /users/{user_id}/sessions`) ni le consumer
+(`scripts/consume_user_inputs.py`) ne valident `exercise_name` contre
+`dim_exercise`** — limite assumee et documentee : un appel direct a l'API
+(hors dashboard) avec un `exercise_name` inconnu produirait une ligne
+orpheline silencieuse plutot qu'une erreur explicite. Pas corrige ici (hors
+perimetre), a traiter si l'API doit un jour etre exposee/utilisee
+hors du dashboard.
+
+### Declenchement dbt : run COMPLET, PAS partiel par utilisateur
+
+`scripts/consume_user_inputs.py` declenche le DAG `gold_dbt_run` EXISTANT
+dans son integralite via l'API REST Airflow
+(`POST /api/v1/dags/gold_dbt_run/dagRuns`), avec
+`conf={"triggered_by": "realtime_user_input", "user_id": ...}` transmis
+**uniquement a des fins de tracabilite/logging** dans l'UI Airflow (visible
+sur la page du DAG run) — `gold_dbt_run.py` ne lit pas cette conf, aucune
+branche de code conditionnelle dessus.
+
+**Run partiel par utilisateur explicitement ENVISAGE puis ECARTE** (documente,
+pas simplement omis) : `fact_risk_score.sql` calcule `charge_factor`/`volume_factor`
+par FENETRE GLISSANTE (`lag()`/`avg() over (...)` sur les semaines de
+CHAQUE utilisateur x zone musculaire). dbt `--select` filtre des MODELES,
+pas des lignes — il n'existe pas de mecanisme natif dbt pour "ne
+recalculer que les lignes d'un utilisateur" au sein d'un modele `table`.
+Un run partiel correct necessiterait soit un modele **incremental** dbt
+(refonte du materialization strategy, hors perimetre de cette sous-etape),
+soit de recalculer quand meme TOUTE la fenetre pour rester juste (auquel
+cas le "partiel" ne gagnerait rien). Le run complet reste donc la seule
+option a la fois simple et garantie correcte pour ce volume de donnees.
+
+### Authentification API Airflow : `basic_auth` ajoute
+
+Le backend d'auth PAR DEFAUT de l'API REST Airflow
+(`airflow.api.auth.backend.session`, confirme via `airflow config
+get-value api auth_backends` avant modification) exige un cookie de
+session obtenu via le formulaire de login web — inutilisable pour un appel
+HTTP programmatique simple. `AIRFLOW__API__AUTH_BACKENDS` etendu a
+`"airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"`
+(les deux, `session` reste utile pour l'UI web elle-meme). Identifiants
+admin existants reutilises (`AIRFLOW_ADMIN_USERNAME`/`PASSWORD`) —
+**simplification assumee** : un compte de service dedie avec un role IAM
+Airflow restreint (ex. lecture/trigger seul, pas admin complet) serait plus
+propre en production, hors perimetre de cette sous-etape.
+
+### BUG REEL trouve et corrige : contention de ressources Spark
+
+**Le plus significatif des bugs de cette sous-etape.** `spark-streaming-gym`
+(sous-etape 2/5, job Structured Streaming LONG-COURANT) capturait les 2
+coeurs du worker (`SPARK_WORKER_CORES=2`) **des son demarrage et les
+gardait indefiniment** (une application Spark standalone ne relache ses
+coeurs qu'a la fin de son execution — un job de streaming continu ne se
+termine jamais). Consequence : `load_silver_to_postgres` (premiere task du
+DAG `gold_dbt_run`, un job Spark **batch**) restait bloque a l'etat
+`WAITING` avec **0 coeur alloue**, indefiniment — confirme concretement via
+l'API JSON du master Spark (`http://spark-master:8080/json/`,
+`coresused: 2`/`coresfree: 0` en continu, l'app batch affichant
+`"state": "WAITING", "cores": 0"` sans jamais progresser, un premier test
+de declenchement etant reste bloque plus de 3 minutes sans que la task
+`load_silver_to_postgres` ne demarre). **Corrige** en ajoutant
+`--conf spark.cores.max=1` a la commande `spark-submit` de
+`spark-streaming-gym` (`docker-compose.yml`) : le volume du topic
+`safelift-gym-occupancy` (1 partition, 5 messages/5-10s) ne justifie de
+toute facon qu'un seul coeur, liberant l'autre pour les jobs batch soumis
+ponctuellement. Verifie concretement apres correctif : `coresused: 1/2`,
+la task `load_silver_to_postgres` demarre et se termine en ~20s comme
+attendu.
+
+### Test end-to-end reel (user_id=9, exercice "Bicep Curl (Barbell)")
+
+Voir PROGRESS_JALON2.md pour le detail complet (logs, requetes, chiffres).
+Resume : soumission via `POST /users/9/sessions` (70kg x 5 series x 15
+reps) -> message Kafka confirme -> ligne inseree dans
+`raw.realtime_user_sessions` (id=1) -> DAG `gold_dbt_run` declenche
+automatiquement (`realtime_input_user9_...`) -> 6/6 tasks `success` -> **nouvelle
+ligne reelle dans `gold.fact_risk_score`** (`session_date=2026-07-08`,
+`workout_session_id=1`, `risk_score=7.81`, recalcule par la formule dbt
+EXISTANTE, aucun code duplique) -> `GET /users/9/risk` (dashboard) reflete
+immediatement la nouvelle valeur. **Delai reel mesure entre la soumission
+et la fin du run dbt : ~70 secondes** (`load_silver_to_postgres` ~20s a
+lui seul, le reste du pipeline dbt ~50s) — le timeout de polling cote
+frontend (`dashboard.js`) a ete ajuste de 60s (valeur initiale supposee,
+non mesuree) a **120s** suite a cette mesure reelle, avec marge.
+`dbt test` : 72/72 PASS avec la ligne reelle en base (pas de regression
+sur les 2164 lignes historiques, `coalesce` verifie neutre pour elles).
+
 ---
 
 ## Resultats d'execution (chiffres reels, DAG `gold_dbt_run`)

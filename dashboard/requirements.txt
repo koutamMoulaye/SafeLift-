@@ -1,3 +1,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 psycopg2-binary==2.9.10
+# Jalon 2, sous-etape 3/5 : POST /users/{user_id}/sessions publie sur Kafka
+# (safelift-user-inputs), meme lib que scripts/simulate_gym_occupancy.py et
+# scripts/consume_user_inputs.py pour rester coherent dans le projet.
+confluent-kafka==2.6.1

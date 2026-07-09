@@ -1,0 +1,16 @@
+# SafeLift - Simulateur d'affluence (Jalon 2, sous-etape 1/5)
+# Processus long-courant (producteur Kafka), PAS un DAG Airflow : construit
+# comme un service Docker independant (voir docker-compose.yml, service
+# gym-simulator), au meme titre que le dashboard (dashboard/Dockerfile).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements_gym_simulator.txt .
+RUN pip install --no-cache-dir -r requirements_gym_simulator.txt
+
+COPY simulate_gym_occupancy.py .
+
+# -u : sortie non bufferisee, pour que les logs apparaissent immediatement
+# dans "docker compose logs" (utile pour la verification en continu).
+CMD ["python", "-u", "simulate_gym_occupancy.py"]

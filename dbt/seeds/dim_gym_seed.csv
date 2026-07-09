@@ -1,0 +1,6 @@
+gym_id,gym_name,city,neighborhood,capacity_max
+1,SafeLift Bastille,Paris,Bastille (11e),140
+2,SafeLift Part-Dieu,Lyon,Part-Dieu,180
+3,SafeLift Vieux-Port,Marseille,Vieux-Port,100
+4,SafeLift Capitole,Toulouse,Capitole,130
+5,SafeLift Chartrons,Bordeaux,Chartrons,90

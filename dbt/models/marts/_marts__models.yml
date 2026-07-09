@@ -67,9 +67,13 @@ models:
 
   - name: fact_workout_session
     description: >
-      Une ligne = un exercice realise dans une seance (source unique :
-      weight_training). Grain d'agregation : (session_date, workout_name,
-      exercise_name) -- voir tests/assert_fact_workout_session_grain_unique.sql.
+      Une ligne = un exercice realise dans une seance. Sources UNIFIEES
+      (Jalon 2, sous-etape 3/5) : weight_training (historique statique,
+      rattache au demo_user) + realtime_user_sessions (saisies temps reel
+      via le dashboard), voir stg_workout_sessions_unified.sql et
+      data/gold/GOLD_MODEL_DECISIONS.md section 11. Grain d'agregation :
+      (user_id, session_date, workout_name, exercise_id) -- voir
+      tests/assert_fact_workout_session_grain_unique.sql.
     columns:
       - name: workout_session_id
         data_tests:
@@ -143,6 +147,25 @@ models:
           - not_null
           - accepted_values:
               values: ["Faible", "Modere", "Eleve"]
+
+  - name: dim_gym
+    description: >
+      Salles SafeLift -- donnees 100% FICTIVES (aucun dataset Kaggle
+      d'affluence disponible, simulateur custom retenu pour le Jalon 2, voir
+      scripts/simulate_gym_occupancy.py). Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 9.
+    columns:
+      - name: gym_id
+        data_tests:
+          - unique
+          - not_null
+      - name: gym_name
+        data_tests:
+          - unique
+          - not_null
+      - name: capacity_max
+        data_tests:
+          - not_null
 
   - name: fact_risk_score_demo_synthetic
     description: >

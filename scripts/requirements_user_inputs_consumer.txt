@@ -1,0 +1,15 @@
+# Dependances pour scripts/consume_user_inputs.py (Jalon 2, sous-etape 3/5).
+#
+# confluent-kafka : meme choix que scripts/simulate_gym_occupancy.py et
+# spark/jobs/stream_gym_occupancy.py (coherence deja etablie dans le
+# projet, voir CLAUDE.md).
+confluent-kafka==2.6.1
+
+# Insertion dans raw.realtime_user_sessions (app-postgres) -- meme version
+# que les autres scripts du projet.
+psycopg2-binary==2.9.10
+
+# Appel de l'API REST Airflow (POST /api/v1/dags/gold_dbt_run/dagRuns) avec
+# authentification Basic -- librairie standard et simple pour un appel HTTP
+# ponctuel, evite le boilerplate d'urllib.request pour l'auth Basic.
+requests==2.32.3

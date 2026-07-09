@@ -5,6 +5,10 @@
 > Mettre a jour ce fichier AVANT de considerer une etape terminee, pour qu'il
 > reflete toujours l'etat reel du repo. Voir aussi [CLAUDE.md](./CLAUDE.md)
 > pour le contexte et les decisions techniques.
+>
+> **Ce fichier couvre uniquement le Jalon 1 (etapes 1 a 6, clos le
+> 2026-07-08)** — voir [PROGRESS_JALON2.md](./PROGRESS_JALON2.md) pour le
+> Jalon 2 (streaming affluence temps reel), demarre le 2026-07-09.
 
 ## Etape 1/6 — Scaffolding + stack Docker locale — ✅ fait
 
@@ -1041,4 +1045,134 @@ identifiant naturel, ou UUID persiste dans une table de mapping).
   hexadecimaux de 64 caracteres confirmes, aucun `user_id` en clair visible
   cote AWS.
 
-**Reste a faire** : sous-etape 3/6 (CI/CD) toujours non definie.
+### Sous-etape 3/6 — CI/CD GitHub Actions (Terraform validate + plan) — ✅ fait
+
+**Date** : 2026-07-08.
+
+**Perimetre** : pipeline GitHub Actions qui valide le code Terraform
+(`terraform/`) a chaque pull request/push le touchant, plus un
+declenchement manuel. Contrainte structurante deja actee (compte AWS
+Academy Learner Lab, credentials temporaires expirant en quelques heures) :
+**aucun `terraform apply` automatique**, uniquement `fmt`/`init`/`validate`/
+`plan`. L'apply reel reste toujours declenche manuellement par
+l'utilisateur, comme pour les sous-etapes 2/6 et 4/6.
+
+**Livre** :
+- `.github/workflows/terraform-ci.yml` : job unique `Validate & Plan`,
+  declenche sur `pull_request` (chemin `terraform/**`), `push` sur `main`
+  (chemin `terraform/**`), et `workflow_dispatch` (test manuel sans
+  dependre d'un vrai push/PR). Etapes dans l'ordre : checkout ->
+  `hashicorp/setup-terraform@v3` (version `1.5.7`, alignee sur
+  `required_version >= 1.5.0` de `terraform/versions.tf`) -> `terraform fmt
+  -check -recursive -diff` (echoue explicitement avec message clair si le
+  code n'est pas formate) -> `terraform init` (backend local, ne necessite
+  aucun acces AWS) -> `terraform validate` (**vrai garde-fou qualite** du
+  pipeline, ne necessite aucun acces AWS, doit toujours reussir) ->
+  reconstruction de `~/.aws/credentials` (profil `awslearnerlab`, coherent
+  avec `terraform/versions.tf` et l'usage local) a partir des secrets
+  GitHub `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` ->
+  `terraform plan` avec `continue-on-error: true` explicite (un token
+  Learner Lab expire ou des secrets non configures est un cas normal sur ce
+  type de compte, ne doit jamais bloquer la pull request) -> etape de
+  rapport clair lisant `steps.plan.outcome` (pas `conclusion`, qui serait
+  toujours "success" a cause de `continue-on-error`) pour afficher soit un
+  succes avec resume, soit un avertissement explicite ("credentials AWS
+  probablement expirees... voir AWS_LAB_CONSTRAINTS.md") -> commentaire
+  automatique du resume de plan sur la pull request (`actions/github-script@v7`,
+  seulement si `github.event_name == 'pull_request'` ET plan reussi ;
+  jamais sur un `workflow_dispatch`/push, ce qui explique le `skipped`
+  observe lors des tests ci-dessous).
+- `.github/workflows/README.md` : documentation dediee — pourquoi jamais
+  d'apply automatique, tableau recapitulatif de ce que verifie chaque
+  etape (et si un echec y est tolere), procedure d'ajout des 3 secrets
+  GitHub (`Settings > Secrets and variables > Actions > New repository
+  secret`, URL directe `https://github.com/koutamMoulaye/SafeLift-/settings/secrets/actions`),
+  procedure a suivre si `plan` echoue en CI (rafraichir les credentials
+  Learner Lab, mettre a jour les 3 secrets, relancer via
+  `workflow_dispatch`).
+- Aucune valeur de credential committee nulle part : uniquement des
+  references `${{ secrets.XXX }}` dans le YAML.
+
+**Verifications effectuees (2 runs reels sur GitHub Actions, aucun
+dry-run)** — run `28973493056` sur `koutamMoulaye/SafeLift-`,
+https://github.com/koutamMoulaye/SafeLift-/actions/runs/28973493056 :
+
+1. **Tentative 1 (`workflow_dispatch`, secrets GitHub jamais configures a ce
+   moment)** : job `Validate & Plan` conclusion **`success`** globale.
+   `checkout`/`setup-terraform`/`fmt -check`/`init`/`validate` tous
+   `success`. Etape `terraform plan` : **echec reel confirme** (annotation
+   GitHub native "Terraform exited with code 1", provenant de
+   `hashicorp/setup-terraform` qui remonte le code de sortie reel meme sous
+   `continue-on-error`) — cause reelle identifiee avec l'utilisateur : les 3
+   secrets GitHub n'avaient jamais ete crees (pas une expiration Learner
+   Lab a proprement parler, mais le meme comportement cote pipeline).
+   `continue-on-error: true` a bien empeche cet echec de faire echouer le
+   job (distinction verifiee concretement entre `outcome` = `failure` de
+   l'etape plan et `conclusion` = `success` du job global, exactement le
+   comportement recherche). Etape "Commentaire du resume sur la PR" :
+   `skipped` (attendu, ce run n'est pas une pull request).
+2. **Tentative 2 (re-run du meme run apres ajout des 3 secrets GitHub avec
+   des credentials Learner Lab fraiches)** : **10/10 etapes `success`**, y
+   compris `terraform plan` cette fois (job id `85979351748`, verifie
+   individuellement via l'API GitHub `check-runs/{id}/annotations` : plus
+   aucune annotation `failure`, uniquement l'avertissement Node.js 20 sans
+   rapport avec Terraform). Confirme que le chemin "credentials valides"
+   fonctionne reellement, pas seulement le chemin degrade.
+
+Verification faite via l'API publique GitHub (`api.github.com/repos/.../actions/runs`,
+`.../check-runs/{id}/annotations`) plutot que le CLI `gh` (non installe
+dans cette session) — le depot est public, ces lectures ne necessitent
+aucune authentification.
+
+**Limite assumee** : le commentaire automatique de resume de plan sur les
+pull requests (point 5 de la demande initiale) n'a pas pu etre teste en
+conditions reelles dans cette session (les 2 runs reels ci-dessus etaient
+un `workflow_dispatch`/re-run, pas une vraie pull request) — le code est en
+place (`if: github.event_name == 'pull_request' && steps.plan.outcome ==
+'success'`) et le comportement `skipped` observe sur les 2 runs est
+coherent avec la condition, mais son execution reelle sur une vraie PR
+reste a confirmer a la prochaine pull request touchant `terraform/**`.
+
+**Reste a faire** : aucune sous-etape restante pour l'etape 6/6 — voir
+resume de cloture du Jalon 1 ci-dessous.
+
+---
+
+## 🏁 Cloture du Jalon 1 — SafeLift (etapes 1 a 6) — 2026-07-08
+
+Les 6 etapes prevues pour ce jalon de la certification RNCP36739 sont
+desormais toutes livrees et verifiees en conditions reelles (pas de
+pseudo-code, pas de TODO vague). Recapitulatif :
+
+| Etape | Contenu | Statut |
+|---|---|---|
+| 1/6 | Scaffolding repo + stack Docker locale (Kafka/Zookeeper, Spark, Airflow, 2x Postgres, dashboard placeholder) | ✅ fait |
+| 2/6 | Ingestion Bronze (Kaggle -> CSV -> Parquet via Airflow) | ✅ fait (volet B) — *producteur Kafka de donnees simulees non traite, hors perimetre finalement retenu pour ce jalon* |
+| 3/6 | Transformation Silver (nettoyage/normalisation Spark, orchestre par Airflow) | ✅ fait |
+| 4/6 | Gold : modele en etoile (dbt sur Postgres) + `risk_score` deterministe | ✅ fait |
+| 5/6 | Serving : API FastAPI + dashboard theme sombre + simulateur what-if | ✅ fait (backend et structure entierement testes ; **rendu visuel non confirme par Claude Code**, extension navigateur indisponible sur toutes les sessions — voir TODO Moulaye ci-dessous) |
+| 6/6 | Terraform (S3 + Athena) + gouvernance RGPD + CI/CD GitHub Actions | ✅ fait — audit (1/6), ressources reelles (2/6), CI/CD (3/6), RGPD (4/6) toutes verifiees en conditions reelles |
+
+**Chaine de bout en bout operationnelle et testee** : Kaggle -> Bronze ->
+Silver -> Gold (etoile + risk_score) -> Serving (API + dashboard), avec
+declenchement en cascade automatique Bronze -> Silver -> Gold en local
+(Airflow), export Gold -> S3/Athena (manuel, script dedie), pseudonymisation
+a la restitution externe, et desormais un pipeline CI/CD qui valide chaque
+changement Terraform automatiquement (sans jamais appliquer seul).
+
+**Limites/TODO connus qui survivent a la cloture du jalon** (aucun n'est
+bloquant pour la certification, tous documentes honnetement plutot que
+masques) :
+- Licence Kaggle du dataset `weight_training` toujours `unknown` — a
+  verifier manuellement par Moulaye avant soutenance (voir
+  `data/bronze/SCHEMA_NOTES.md`).
+- Rendu visuel du dashboard (theme sombre, jauge, panneau Simulateur)
+  jamais confirme par Claude Code faute d'extension navigateur connectee —
+  a confirmer par Moulaye sur http://localhost:18000.
+- `user_id` (`dim_user`) reste un surrogate `row_number()` non stable :
+  toute pseudonymisation/effacement RGPD reste structurellement fragile a
+  un changement de volumetrie de `gym_members` (voir CLAUDE.md).
+- Commentaire automatique de plan sur pull request (CI/CD) code mais pas
+  encore declenche par une vraie PR.
+- Producteur Kafka de donnees simulees (volet non traite de l'etape 2/6) —
+  a definir explicitement si un jalon futur en a besoin.

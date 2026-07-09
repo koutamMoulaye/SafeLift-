@@ -373,8 +373,12 @@ async function onUserChange() {
   clearSimHighlight();
   document.getElementById("sim-result").innerHTML =
     '<p class="placeholder">Choisissez un exercice et des paramètres, puis cliquez sur « Simuler ».</p>';
+  stopLogSessionPolling();
+  document.getElementById("log-session-status").textContent = "";
+  document.getElementById("log-session-status").className = "log-session-status";
   if (!isDemoMode) {
     await loadSimulatorExercises(userId);
+    await loadLogSessionExercises(userId);
   }
 }
 
@@ -609,6 +613,171 @@ function applySimulatorAvailability() {
   }
 }
 
+// --- Logger une seance temps reelle (Jalon 2, sous-etape 3/5) ---
+// POST /users/{user_id}/sessions PUBLIE l'evenement sur Kafka -- l'API
+// n'ecrit JAMAIS en base directement (voir dashboard/main.py). Le score
+// n'est PAS mis a jour immediatement : un consumer (scripts/consume_user_inputs.py)
+// insere la seance puis declenche un run dbt COMPLET (memes constantes que
+// fact_risk_score.sql, aucune duplication de la formule -- le run complet
+// recalcule tout le schema gold, pas seulement l'utilisateur concerne, cf.
+// data/gold/GOLD_MODEL_DECISIONS.md section 11). On re-fetch donc
+// GET /users/{id}/risk toutes les LOG_SESSION_POLL_INTERVAL_MS jusqu'a
+// detecter un changement du risk_score sur la zone concernee, ou jusqu'a
+// LOG_SESSION_POLL_TIMEOUT_MS.
+//
+// Delai REEL mesure en conditions reelles (voir PROGRESS_JALON2.md
+// sous-etape 3/5, test end-to-end sur user_id=9) : ~70s entre la
+// soumission et la fin du run dbt (load_silver_to_postgres, seul step
+// Spark, domine le delai a lui seul, ~20s ; dbt_seed/dbt_run_staging/
+// fuzzy_match_exercises/dbt_run/dbt_test totalisent le reste). Timeout
+// fixe a 120s (marge x1.7 par rapport au delai reel observe), pas les 60s
+// initialement supposees avant mesure reelle -- ne JAMAIS deviner un delai
+// sans le mesurer sur ce projet.
+const LOG_SESSION_POLL_INTERVAL_MS = 3000;
+const LOG_SESSION_POLL_TIMEOUT_MS = 120000;
+let logSessionPollTimer = null;
+
+function stopLogSessionPolling() {
+  if (logSessionPollTimer) {
+    clearTimeout(logSessionPollTimer);
+    logSessionPollTimer = null;
+  }
+}
+
+async function loadLogSessionExercises(userId) {
+  // Reutilise la MEME source que le simulateur what-if (exercices
+  // REELLEMENT deja pratiques par cet utilisateur) : un <select> plutot
+  // qu'un champ texte libre, precisement pour garantir que exercise_name
+  // correspond toujours a un normalized_exercise_name deja connu de
+  // gold.dim_exercise -- sinon la seance resterait orpheline (exercise_id
+  // NULL) et le risk_score ne pourrait pas etre calcule. Voir
+  // data/gold/GOLD_MODEL_DECISIONS.md section 11.
+  const res = await fetch(`/users/${userId}/exercises`);
+  const data = await res.json();
+
+  const select = document.getElementById("log-exercise-select");
+  select.innerHTML = "";
+  data.exercises.forEach((ex) => {
+    const opt = document.createElement("option");
+    opt.value = ex.exercise_name;
+    opt.dataset.muscleGroup = ex.muscle_group;
+    opt.textContent = `${ex.exercise_name} (${MUSCLE_LABELS_FR[ex.muscle_group] || ex.muscle_group})`;
+    select.appendChild(opt);
+  });
+}
+
+function applyLogSessionAvailability() {
+  document.getElementById("log-session-unavailable").classList.toggle("hidden", !isDemoMode);
+  document.getElementById("log-session-form-wrapper").classList.toggle("hidden", isDemoMode);
+  if (isDemoMode) {
+    stopLogSessionPolling();
+    document.getElementById("log-session-status").textContent = "";
+    document.getElementById("log-session-status").className = "log-session-status";
+  }
+}
+
+function setLogSessionStatus(text, variant) {
+  const el = document.getElementById("log-session-status");
+  el.textContent = text;
+  el.className = variant ? `log-session-status log-session-${variant}` : "log-session-status";
+}
+
+async function onLogSessionSubmit() {
+  if (isDemoMode || !currentRealUserId) return;
+
+  const exerciseSelect = document.getElementById("log-exercise-select");
+  const exerciseName = exerciseSelect.value;
+  if (!exerciseName) return;
+  const muscleGroup = exerciseSelect.selectedOptions[0]?.dataset.muscleGroup || null;
+
+  const payload = {
+    exercise_name: exerciseName,
+    lifted_weight_kg: parseFloat(document.getElementById("log-weight").value),
+    reps: parseInt(document.getElementById("log-reps").value, 10),
+    sets: parseInt(document.getElementById("log-sets").value, 10),
+    duration_seconds: (parseFloat(document.getElementById("log-duration").value) || 0) * 60,
+  };
+
+  const submitBtn = document.getElementById("log-session-submit");
+  submitBtn.disabled = true;
+  stopLogSessionPolling();
+  setLogSessionStatus("Envoi de la séance vers Kafka...", "pending");
+
+  let res;
+  try {
+    res = await fetch(`/users/${currentRealUserId}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    setLogSessionStatus("Erreur réseau lors de l'envoi — le dashboard est peut-être injoignable.", "error");
+    submitBtn.disabled = false;
+    return;
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    setLogSessionStatus(`Échec de l'envoi (Kafka injoignable ou requête invalide) : ${body.detail || res.status}`, "error");
+    submitBtn.disabled = false;
+    return;
+  }
+
+  // Score de reference AVANT le recalcul, pour detecter un vrai changement
+  // (et pas juste "une reponse est revenue") -- comparaison sur la zone
+  // musculaire concernee par l'exercice logue.
+  const before = currentRealMuscles.find((m) => m.muscle_group === muscleGroup);
+  const beforeScore = before ? before.risk_score : null;
+  const startedAt = Date.now();
+
+  setLogSessionStatus("Séance envoyée — recalcul dbt en cours...", "pending");
+
+  const poll = async () => {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs > LOG_SESSION_POLL_TIMEOUT_MS) {
+      setLogSessionStatus(
+        `Toujours en attente après ${Math.round(elapsedMs / 1000)}s — le score se mettra à jour automatiquement au prochain rafraîchissement de la page.`,
+        "timeout"
+      );
+      submitBtn.disabled = false;
+      return;
+    }
+
+    let risk;
+    try {
+      const riskRes = await fetch(`/users/${currentRealUserId}/risk`);
+      risk = await riskRes.json();
+    } catch (err) {
+      logSessionPollTimer = setTimeout(poll, LOG_SESSION_POLL_INTERVAL_MS);
+      return;
+    }
+
+    const after = risk.muscles.find((m) => m.muscle_group === muscleGroup);
+    const changed = after && (beforeScore === null || after.risk_score !== beforeScore);
+
+    if (changed) {
+      const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
+      const zoneLabel = MUSCLE_LABELS_FR[muscleGroup] || muscleGroup || "zone";
+      submitBtn.disabled = false;
+      currentRealMuscles = risk.muscles;
+      // onUserChange() re-fetch tout (silhouette, KPIs...) et REINITIALISE
+      // log-session-status au passage (voir onUserChange) -- le message de
+      // succes doit donc etre pose APRES cet appel, sans quoi il serait
+      // efface immediatement.
+      await onUserChange();
+      setLogSessionStatus(
+        `Score mis à jour en ${elapsedSeconds}s — ${zoneLabel} : ${beforeScore ?? "—"} → ${after.risk_score} (${after.risk_level}).`,
+        "success"
+      );
+      return;
+    }
+
+    logSessionPollTimer = setTimeout(poll, LOG_SESSION_POLL_INTERVAL_MS);
+  };
+
+  logSessionPollTimer = setTimeout(poll, LOG_SESSION_POLL_INTERVAL_MS);
+}
+
 // --- Toggle reel / demo ---
 
 function applyModeToUI() {
@@ -617,6 +786,7 @@ function applyModeToUI() {
   document.getElementById("demo-controls").classList.toggle("hidden", !isDemoMode);
   document.getElementById("history-panel").classList.toggle("hidden", isDemoMode);
   applySimulatorAvailability();
+  applyLogSessionAvailability();
 
   clearZoneSelection();
   if (isDemoMode) {
@@ -645,6 +815,9 @@ function init() {
   bindSimSlider("sim-duration", "sim-duration-value");
   document.getElementById("sim-submit").addEventListener("click", onSimSubmit);
   applySimulatorAvailability();
+
+  document.getElementById("log-session-submit").addEventListener("click", onLogSessionSubmit);
+  applyLogSessionAvailability();
 
   loadUsers();
 }

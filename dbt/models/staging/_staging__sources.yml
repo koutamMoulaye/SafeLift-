@@ -33,3 +33,13 @@ sources:
           supporte pas les modeles Python). Ecrase et recalcule a chaque run
           du DAG gold_dbt_run. Contient TOUS les scores (y compris sous le
           seuil de 85% retenu), filtres dans dim_exercise.sql pour audit.
+      - name: realtime_user_sessions
+        description: >
+          Seances de musculation saisies en temps reel via le dashboard
+          (POST /users/{user_id}/sessions -> Kafka safelift-user-inputs ->
+          scripts/consume_user_inputs.py, Jalon 2 sous-etape 3/5). Grain = 1
+          ligne par exercice complet d'une seance (sets/reps DEJA agreges
+          cote formulaire, contrairement a silver_weight_training qui est au
+          grain "1 ligne par set"). Table creee et alimentee par le
+          consumer, PAS par un job Spark -- voir
+          data/gold/GOLD_MODEL_DECISIONS.md section 11.

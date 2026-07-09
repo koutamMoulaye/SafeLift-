@@ -1,0 +1,13 @@
+# SafeLift - Consumer des saisies utilisateur temps reel (Jalon 2, sous-etape 3/5)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements_user_inputs_consumer.txt .
+RUN pip install --no-cache-dir -r requirements_user_inputs_consumer.txt
+
+COPY consume_user_inputs.py .
+
+# -u : sortie non bufferisee, pour que les logs apparaissent immediatement
+# dans "docker compose logs" (utile pour la verification en continu).
+CMD ["python", "-u", "consume_user_inputs.py"]

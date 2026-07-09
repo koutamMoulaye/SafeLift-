@@ -234,6 +234,47 @@
       </div>
     </div>
   </section>
+
+  <!-- Logger une seance temps reelle (Jalon 2, sous-etape 3/5) : POST
+       /users/{user_id}/sessions PUBLIE sur Kafka (safelift-user-inputs) --
+       l'API n'ecrit JAMAIS en base directement, decouplage evenementiel
+       demontre ici (consumer : scripts/consume_user_inputs.py). Apres
+       soumission, re-fetch automatique de /users/{id}/risk toutes les
+       quelques secondes jusqu'a detecter le changement de score (ou
+       timeout raisonnable) -- voir dashboard.js et PROGRESS_JALON2.md pour
+       le delai reel mesure. Desactive en mode demo (memes raisons que le
+       simulateur what-if : pas d'user_id reel a associer). -->
+  <section class="log-session-panel" id="log-session-panel">
+    <h2>Logger une séance</h2>
+    <p class="placeholder">Enregistrez une séance réelle pour l'utilisateur sélectionné — l'événement passe par Kafka, un consumer l'insère en base puis déclenche le recalcul dbt du score (formule unique, partagée avec le reste du pipeline).</p>
+
+    <div id="log-session-unavailable" class="hidden">
+      <p class="placeholder">Cette fonctionnalité nécessite un utilisateur réel — désactivez le mode démonstration pour l'utiliser.</p>
+    </div>
+
+    <div id="log-session-form-wrapper">
+      <div class="simulator-form">
+        <label for="log-exercise-select">Exercice déjà pratiqué :</label>
+        <select id="log-exercise-select"></select>
+
+        <label for="log-weight">Poids soulevé (kg) :</label>
+        <input type="number" id="log-weight" min="0.5" step="0.5" value="20">
+
+        <label for="log-reps">Répétitions par série :</label>
+        <input type="number" id="log-reps" min="1" step="1" value="10">
+
+        <label for="log-sets">Séries :</label>
+        <input type="number" id="log-sets" min="1" step="1" value="3">
+
+        <label for="log-duration">Durée totale (minutes) :</label>
+        <input type="number" id="log-duration" min="0" step="1" value="45">
+
+        <button id="log-session-submit" type="button" class="btn-primary">Enregistrer la séance</button>
+      </div>
+
+      <p id="log-session-status" class="log-session-status"></p>
+    </div>
+  </section>
 </main>
 
 <script src="/static/dashboard.js"></script>

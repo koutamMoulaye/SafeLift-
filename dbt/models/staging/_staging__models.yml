@@ -25,3 +25,39 @@ models:
       - name: performed_at
         data_tests:
           - not_null
+
+  - name: stg_realtime_user_sessions
+    description: >
+      Seances saisies en temps reel via le dashboard (Jalon 2, sous-etape
+      3/5). Grain = 1 ligne par exercice complet (sets/reps deja agreges),
+      contrairement a stg_weight_training (grain = 1 ligne par set). Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 11.
+    columns:
+      - name: user_id
+        data_tests:
+          - not_null
+      - name: exercise_name
+        data_tests:
+          - not_null
+      - name: performed_at
+        data_tests:
+          - not_null
+
+  - name: stg_workout_sessions_unified
+    description: >
+      Union de stg_weight_training (agregee au grain par-exercice) et
+      stg_realtime_user_sessions, AVANT fact_workout_session. Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 11 pour la decision
+      d'architecture complete.
+    columns:
+      - name: normalized_exercise_name
+        data_tests:
+          - not_null
+      - name: session_date
+        data_tests:
+          - not_null
+      - name: source_dataset
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["weight_training", "realtime_user_input"]

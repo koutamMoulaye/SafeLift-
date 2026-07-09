@@ -429,11 +429,13 @@ h2 {
 }
 
 .simulator-form select,
-.simulator-form input[type="range"] {
+.simulator-form input[type="range"],
+.simulator-form input[type="number"] {
   width: 100%;
 }
 
-.simulator-form select {
+.simulator-form select,
+.simulator-form input[type="number"] {
   padding: 7px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -483,4 +485,58 @@ h2 {
 .zone.sim-highlight {
   stroke-width: 3.5;
   stroke-dasharray: 6 4;
+}
+
+/* --- Logger une seance temps reelle (Jalon 2, sous-etape 3/5) --- */
+
+.log-session-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px;
+  margin-top: 20px;
+}
+
+#log-session-form-wrapper {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-top: 8px;
+}
+
+.log-session-status {
+  align-self: start;
+  margin: 8px 0 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  min-height: 20px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+}
+
+.log-session-status:empty { display: none; }
+
+.log-session-status.log-session-pending {
+  border-color: var(--accent-teal);
+  color: var(--text-primary);
+}
+
+.log-session-status.log-session-success {
+  border-color: var(--color-faible);
+  color: var(--color-faible);
+  font-weight: 600;
+}
+
+.log-session-status.log-session-error {
+  border-color: var(--color-eleve);
+  color: var(--color-eleve);
+  font-weight: 600;
+}
+
+.log-session-status.log-session-timeout {
+  border-color: var(--color-modere);
+  color: var(--color-modere);
 }

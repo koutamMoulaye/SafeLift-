@@ -12,6 +12,18 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
   AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
   AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  # Jalon 2, sous-etape 3/5 : scripts/consume_user_inputs.py declenche
+  # gold_dbt_run via l'API REST d'Airflow (POST /api/v1/dags/.../dagRuns)
+  # apres avoir insere une seance temps reel -- le backend d'auth PAR DEFAUT
+  # ("session", confirme via `airflow config get-value api auth_backends`)
+  # exige un cookie de session obtenu via le formulaire de login web, pas
+  # utilisable pour un appel HTTP programmatique simple. "basic_auth" est
+  # ajoute ici (en plus de "session", qui reste utile pour l'UI web
+  # elle-meme) pour permettre l'authentification Basic avec les identifiants
+  # admin existants (AIRFLOW_ADMIN_USERNAME/PASSWORD). Seul le webserver
+  # (qui sert l'API) exploite reellement ce reglage ; herite par
+  # scheduler/init via cette ancre commune sans effet pour eux.
+  AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
 
 x-airflow-common-volumes: &airflow-common-volumes
   - ./airflow/dags:/opt/airflow/dags
@@ -93,7 +105,19 @@ services:
     networks:
       - safelift-network
 
-  # Conteneur "one-shot" qui cree le topic de test puis s'arrete (exit 0)
+  # Conteneur "one-shot" qui cree les topics puis s'arrete (exit 0).
+  # Jalon 2, sous-etape 1/5 : ajout de la creation de
+  # ${KAFKA_GYM_OCCUPANCY_TOPIC} (safelift-gym-occupancy), topic DEDIE au
+  # streaming d'affluence -- le topic de test cree a l'etape 1/6 du Jalon 1
+  # (${KAFKA_TEST_TOPIC}) n'est qu'une verification initiale du broker, pas
+  # reutilise pour des donnees applicatives. Choix de centraliser la
+  # creation ici (plutot que dans scripts/simulate_gym_occupancy.py via un
+  # AdminClient) : source unique de verite pour les topics du projet, deja
+  # le mecanisme etabli au Jalon 1. Note : KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+  # est egalement actif sur le broker (cf. service kafka ci-dessus), donc la
+  # publication fonctionnerait meme sans cette etape -- kafka-init reste
+  # utile pour un partitionnement/replication explicites et une confirmation
+  # visible en log que le topic existe avant de demarrer gym-simulator.
   kafka-init:
     image: confluentinc/cp-kafka:7.6.1
     container_name: safelift-kafka-init
@@ -104,6 +128,10 @@ services:
     command: >
       "kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --create --if-not-exists
       --topic ${KAFKA_TEST_TOPIC} --partitions 1 --replication-factor 1
+      && kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --create --if-not-exists
+      --topic ${KAFKA_GYM_OCCUPANCY_TOPIC} --partitions 1 --replication-factor 1
+      && kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --create --if-not-exists
+      --topic ${KAFKA_USER_INPUTS_TOPIC} --partitions 1 --replication-factor 1
       && echo 'Topics disponibles :'
       && kafka-topics --bootstrap-server kafka:${KAFKA_INTERNAL_PORT} --list"
     networks:
@@ -290,12 +318,20 @@ services:
     depends_on:
       app-postgres:
         condition: service_healthy
+      # Jalon 2, sous-etape 3/5 : POST /users/{user_id}/sessions publie sur
+      # Kafka (safelift-user-inputs) -- s'assure que le topic existe avant
+      # que le dashboard ne demarre (KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      # reste un filet de securite si jamais ce n'etait pas le cas).
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       APP_POSTGRES_HOST: app-postgres
       APP_POSTGRES_PORT: 5432
       APP_POSTGRES_DB: ${APP_POSTGRES_DB}
       APP_POSTGRES_USER: ${APP_POSTGRES_USER}
       APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      KAFKA_USER_INPUTS_TOPIC: ${KAFKA_USER_INPUTS_TOPIC}
     ports:
       - "${DASHBOARD_PORT_EXPOSED}:8000"
     healthcheck:
@@ -304,6 +340,197 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Simulateur d'affluence (Jalon 2, sous-etape 1/5) : publie en continu des
+  # messages JSON d'occupation par salle sur le topic Kafka
+  # safelift-gym-occupancy. PAS un DAG Airflow (processus long-courant de
+  # streaming, pas un batch planifie) : service Docker independant, comme le
+  # dashboard. Lit gold.dim_gym (cree par dbt, voir dbt/models/marts/dim_gym.sql)
+  # au demarrage -- necessite donc qu'un `dbt seed`+`dbt run --select dim_gym`
+  # ait deja ete execute au moins une fois (voir PROGRESS_JALON2.md) ; en
+  # attendant, le script retente la lecture avec backoff plutot que de
+  # planter immediatement (cf. load_gyms_with_retry()).
+  # ---------------------------------------------------------------------------
+  gym-simulator:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.gym_simulator
+    container_name: safelift-gym-simulator
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      app-postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      KAFKA_GYM_OCCUPANCY_TOPIC: ${KAFKA_GYM_OCCUPANCY_TOPIC}
+      APP_POSTGRES_HOST: app-postgres
+      APP_POSTGRES_PORT: 5432
+      APP_POSTGRES_DB: ${APP_POSTGRES_DB}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+      GYM_SIMULATOR_INTERVAL_MIN_SECONDS: ${GYM_SIMULATOR_INTERVAL_MIN_SECONDS}
+      GYM_SIMULATOR_INTERVAL_MAX_SECONDS: ${GYM_SIMULATOR_INTERVAL_MAX_SECONDS}
+    healthcheck:
+      # Pas de port HTTP expose par ce service (producteur Kafka pur) : le
+      # healthcheck relit le fichier de heartbeat reecrit a chaque cycle
+      # reussi par le script (voir HEARTBEAT_PATH dans simulate_gym_occupancy.py).
+      # Seuil fixe a 60s (marge large par rapport a l'intervalle par defaut
+      # de 5-10s) -- a ajuster si GYM_SIMULATOR_INTERVAL_MAX_SECONDS est un
+      # jour configure bien au-dessus de cette valeur.
+      test: ["CMD", "python", "-c", "import time,sys; sys.exit(0 if (time.time() - float(open('/tmp/gym_simulator_heartbeat').read())) < 60 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Consumer Spark Structured Streaming (Jalon 2, sous-etape 2/5) : lit en
+  # continu safelift-gym-occupancy et maintient l'etat courant (dernier
+  # message par salle) dans gold.gym_occupancy_live. PAS un DAG Airflow
+  # (processus long-courant de streaming, pas un batch planifie) : soumis en
+  # mode client au cluster Spark existant (spark-master/spark-worker) par ce
+  # service dedie, qui joue le role de "driver" et reste demarre en continu.
+  # Voir spark/jobs/stream_gym_occupancy.py pour le detail des choix
+  # (startingOffsets=latest, upsert via ON CONFLICT, aucun operateur
+  # stateful) et data/gold/GOLD_MODEL_DECISIONS.md section 10.
+  # ---------------------------------------------------------------------------
+  spark-streaming-gym:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile.streaming
+    container_name: safelift-spark-streaming-gym
+    restart: unless-stopped
+    depends_on:
+      spark-worker:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      app-postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    # spark.driver.host=$(hostname -i)/spark.driver.bindAddress=0.0.0.0 :
+    # meme necessite qu'en Silver/Gold (mode client dans Docker Compose, voir
+    # airflow/dags/silver_transformation.py) -- le driver (ce conteneur) doit
+    # s'annoncer aux executeurs (spark-worker) avec une adresse joignable.
+    # Pas de spark.hadoop.fs.permissions.umask-mode=000 ici (contrairement a
+    # Silver) : ce job n'ecrit aucun fichier partage avec les executeurs, le
+    # sink est Postgres et le seul repertoire local (checkpoint) n'est monte
+    # que sur ce conteneur -- voir stream_gym_occupancy.py.
+    # /opt/spark/bin/spark-submit en chemin complet : /opt/spark/bin n'est PAS
+    # dans le PATH par defaut de cette image (confirme via `docker inspect`,
+    # meme raison pour laquelle spark-master/spark-worker utilisent deja un
+    # chemin complet dans leur entrypoint, cf. plus haut dans ce fichier).
+    # spark.jars.ivy=/tmp/.ivy2 : l'utilisateur "spark" de l'image officielle
+    # a un $HOME=/nonexistent (repertoire inexistant, confirme en test reel --
+    # `--packages` echoue sinon avec FileNotFoundException, Ivy essayant
+    # d'ecrire son cache dans /nonexistent/.ivy2/cache). /tmp est toujours
+    # inscriptible, quel que soit l'utilisateur du conteneur.
+    # spark.cores.max=1 : BUG REEL rencontre en testant la sous-etape 3/5 --
+    # cette application Structured Streaming est LONG-COURANTE et garde ses
+    # coeurs alloues en permanence (contrairement a un job batch qui les
+    # relache a la fin). Sans cette limite, elle capture les 2 coeurs du
+    # worker (SPARK_WORKER_CORES) des son demarrage et les garde
+    # indefiniment -- tout job batch soumis ensuite (ex. load_silver_to_postgres,
+    # declenche par gold_dbt_run) reste bloque a l'etat WAITING avec 0 coeur
+    # alloue, POUR TOUJOURS (confirme via l'API JSON du master,
+    # http://spark-master:8080/json/, `coresused: 2` en continu, app batch
+    # `state: WAITING`, `cores: 0`). Le volume de ce topic (1 partition, 5
+    # messages/5-10s) ne justifie de toute facon qu'un seul coeur.
+    command: >
+      "/opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      --deploy-mode client
+      --conf spark.driver.host=$(hostname -i)
+      --conf spark.driver.bindAddress=0.0.0.0
+      --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.cores.max=1
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8
+      /opt/spark-jobs/stream_gym_occupancy.py"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      KAFKA_GYM_OCCUPANCY_TOPIC: ${KAFKA_GYM_OCCUPANCY_TOPIC}
+      APP_POSTGRES_HOST: app-postgres
+      APP_POSTGRES_PORT: 5432
+      APP_POSTGRES_DB: ${APP_POSTGRES_DB}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+    volumes:
+      - ./spark/jobs:/opt/spark-jobs
+      # Checkpoint Spark : volume DEDIE, monte uniquement sur ce conteneur
+      # (pas sur spark-worker -- aucun operateur stateful, le checkpoint
+      # (offsets Kafka + log de commit du sink) est gere entierement par le
+      # driver). Survit aux redemarrages du conteneur (restart: unless-stopped).
+      - spark_streaming_checkpoints:/tmp/spark-checkpoints
+    healthcheck:
+      # Meme pattern que gym-simulator : pas de port HTTP expose, le
+      # healthcheck relit le fichier de heartbeat reecrit apres chaque
+      # micro-batch reussi (voir HEARTBEAT_PATH dans stream_gym_occupancy.py).
+      # Seuil large (120s) car le premier micro-batch peut prendre du temps
+      # (telechargement du package spark-sql-kafka via --packages au premier
+      # demarrage, resolution Ivy).
+      test: ["CMD", "python3", "-c", "import time,sys; sys.exit(0 if (time.time() - float(open('/tmp/spark_streaming_heartbeat').read())) < 120 else 1)"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - safelift-network
+
+  # ---------------------------------------------------------------------------
+  # Consumer des saisies utilisateur temps reel (Jalon 2, sous-etape 3/5) :
+  # lit safelift-user-inputs, valide/insere dans raw.realtime_user_sessions,
+  # puis declenche gold_dbt_run via l'API REST Airflow. PAS un DAG Airflow
+  # (processus long-courant de streaming, pas un batch planifie) -- meme
+  # famille de service que gym-simulator. Voir
+  # scripts/consume_user_inputs.py et data/gold/GOLD_MODEL_DECISIONS.md
+  # section 11.
+  # ---------------------------------------------------------------------------
+  user-inputs-consumer:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.consume_user_inputs
+    container_name: safelift-user-inputs-consumer
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      app-postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_INTERNAL_PORT}
+      KAFKA_USER_INPUTS_TOPIC: ${KAFKA_USER_INPUTS_TOPIC}
+      APP_POSTGRES_HOST: app-postgres
+      APP_POSTGRES_PORT: 5432
+      APP_POSTGRES_DB: ${APP_POSTGRES_DB}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD}
+      # URL interne au reseau docker (port conteneur 8080, pas le port
+      # expose sur l'hote AIRFLOW_WEBSERVER_PORT_EXPOSED).
+      AIRFLOW_API_BASE_URL: http://airflow-webserver:8080
+      # Reutilise les identifiants admin existants (simplification assumee
+      # et documentee -- voir GOLD_MODEL_DECISIONS.md section 11 -- un
+      # compte de service dedie avec un role restreint serait plus propre
+      # en production).
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    healthcheck:
+      # Meme pattern que gym-simulator/spark-streaming-gym : fichier de
+      # heartbeat reecrit a chaque iteration de la boucle de poll (que des
+      # messages soient recus ou non, cf. le script).
+      test: ["CMD", "python", "-c", "import time,sys; sys.exit(0 if (time.time() - float(open('/tmp/user_inputs_consumer_heartbeat').read())) < 30 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - safelift-network
 
@@ -318,3 +545,4 @@ volumes:
   app_postgres_data:
   airflow_postgres_data:
   airflow_logs:
+  spark_streaming_checkpoints:

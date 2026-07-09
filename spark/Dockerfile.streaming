@@ -1,0 +1,30 @@
+# SafeLift - Image driver Spark Structured Streaming (Jalon 2, sous-etape 2/5)
+# Etend l'image officielle apache/spark:3.5.8-python3 (MEME image que
+# spark-master/spark-worker, cf. docker-compose.yml -- garantit que driver
+# et executeurs tournent avec exactement la meme version de Spark/Python,
+# evite la classe de bug PYTHON_VERSION_MISMATCH deja rencontree en Silver,
+# voir CLAUDE.md) avec psycopg2-binary en plus, necessaire pour l'upsert
+# manuel dans gold.gym_occupancy_live (voir stream_gym_occupancy.py).
+#
+# Le script du job N'EST PAS copie dans l'image : il est monte en bind
+# (./spark/jobs:/opt/spark-jobs dans docker-compose.yml), exactement comme
+# spark-master/spark-worker, pour rester coherent avec le reste du projet.
+FROM apache/spark:3.5.8-python3
+
+# L'image de base tourne par defaut sous l'utilisateur non-root "spark"
+# (confirme via docker inspect), qui n'a pas le droit d'ecrire dans le
+# site-packages systeme -- pip install doit donc repasser root le temps de
+# l'installation puis revenir a l'utilisateur d'origine.
+USER root
+RUN pip install --no-cache-dir psycopg2-binary==2.9.10
+
+# Pre-cree le point de montage du volume de checkpoint (spark_streaming_checkpoints,
+# docker-compose.yml) avec l'utilisateur "spark" comme proprietaire : Docker
+# copie les permissions du repertoire de l'IMAGE vers le volume nomme lors de
+# son tout premier montage (volume vide) -- sans cette etape, le point de
+# montage est cree root:root par defaut et le job (qui tourne en "spark")
+# echoue au demarrage avec "mkdir of file:/tmp/spark-checkpoints/... failed"
+# (constate en test reel).
+RUN mkdir -p /tmp/spark-checkpoints && chown -R spark:spark /tmp/spark-checkpoints
+
+USER spark

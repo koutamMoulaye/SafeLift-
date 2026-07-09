@@ -13,12 +13,14 @@ pour rester coherent avec le reste du projet), via un petit pool de
 connexions (le service reste mono-instance, un pool simple suffit).
 """
 
+import json
 import os
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 
 import psycopg2
 import psycopg2.pool
+from confluent_kafka import Producer
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -62,6 +64,17 @@ DB_CONFIG = {
 # evite de rouvrir une connexion TCP a chaque requete sans la complexite d'un
 # pool applicatif plus lourd.
 connection_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=5, **DB_CONFIG)
+
+# Producteur Kafka (Jalon 2, sous-etape 3/5) : POST /users/{user_id}/sessions
+# PUBLIE l'evenement, n'ECRIT JAMAIS directement en base -- le decouplage
+# evenementiel passe par Kafka (safelift-user-inputs), consomme par
+# scripts/consume_user_inputs.py (insertion + declenchement dbt). C'est le
+# point architectural explicitement demande a demontrer : cette API ne
+# connait meme pas le schema de raw.realtime_user_sessions. Instance unique
+# au niveau module (comme connection_pool), reutilisee entre requetes.
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_USER_INPUTS_TOPIC = os.environ.get("KAFKA_USER_INPUTS_TOPIC", "safelift-user-inputs")
+kafka_producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
 
 
 @contextmanager
@@ -462,4 +475,98 @@ def simulate_risk(payload: SimulateRiskRequest) -> dict:
             "recup_factor": {"valeur": recup_factor, "explication": recup_explication},
             "duree_factor": {"valeur": duree_factor, "explication": duree_explication},
         },
+    }
+
+
+class UserSessionInput(BaseModel):
+    exercise_name: str
+    lifted_weight_kg: float
+    reps: int
+    sets: int
+    duration_seconds: float = 0.0
+
+
+@app.post("/users/{user_id}/sessions", status_code=202)
+def submit_user_session(user_id: int, payload: UserSessionInput) -> dict:
+    """Logger une nouvelle seance en temps reel (Jalon 2, sous-etape 3/5).
+
+    NE WRITE JAMAIS en base directement -- PUBLIE uniquement l'evenement sur
+    Kafka (safelift-user-inputs). C'est le point architectural a demontrer :
+    le decouplage evenementiel passe par Kafka, pas par un appel DB direct
+    depuis l'API. `scripts/consume_user_inputs.py` consomme ce topic,
+    insere dans raw.realtime_user_sessions, puis declenche gold_dbt_run
+    (recalcul complet, une seule formule de risk_score partagee avec dbt --
+    voir data/gold/GOLD_MODEL_DECISIONS.md section 11).
+
+    `exercise_name` DOIT correspondre a un exercice deja pratique par cet
+    utilisateur (meme source que GET /users/{user_id}/exercises, deja
+    utilise par le simulateur what-if) -- le dashboard restreint le
+    formulaire a un <select> plutot qu'un champ texte libre, precisement
+    pour eviter qu'un nom d'exercice inconnu de gold.dim_exercise ne
+    produise une ligne orpheline (exercise_id/muscle_id NULL) dans
+    fact_workout_session, qui ferait echouer le calcul de risk_score pour
+    cette seance -- voir la limite assumee dans GOLD_MODEL_DECISIONS.md
+    section 11. Cette validation n'est PAS appliquee cote serveur ici (le
+    consumer ne verifie pas non plus contre dim_exercise) : documente comme
+    limite acceptee pour cette sous-etape, pas cote securite/integrite mais
+    cote pertinence du resultat (le dbt run traiterait quand meme la ligne
+    sans erreur, juste orpheline).
+
+    Erreurs Kafka gerees explicitement (jamais de perte silencieuse cote
+    API) : file d'attente locale pleine ou broker injoignable -> HTTP 503
+    avec un message clair, pas un succes trompeur.
+    """
+    with get_cursor() as cur:
+        cur.execute("select 1 from gold.dim_user where user_id = %s", (user_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail=f"user_id {user_id} introuvable")
+
+    if payload.lifted_weight_kg <= 0 or payload.reps <= 0 or payload.sets <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="lifted_weight_kg, reps et sets doivent être strictement positifs.",
+        )
+
+    message = {
+        "user_id": user_id,
+        "exercise_name": payload.exercise_name,
+        "lifted_weight_kg": payload.lifted_weight_kg,
+        "reps": payload.reps,
+        "sets": payload.sets,
+        "duration_seconds": payload.duration_seconds,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    delivery_result = {"delivered": False, "error": None}
+
+    def _on_delivery(err, _msg):
+        if err is not None:
+            delivery_result["error"] = str(err)
+        else:
+            delivery_result["delivered"] = True
+
+    try:
+        kafka_producer.produce(
+            KAFKA_USER_INPUTS_TOPIC,
+            key=str(user_id).encode("utf-8"),
+            value=json.dumps(message).encode("utf-8"),
+            callback=_on_delivery,
+        )
+        remaining = kafka_producer.flush(timeout=5)
+    except BufferError:
+        raise HTTPException(
+            status_code=503,
+            detail="File d'attente Kafka pleine — réessayez dans quelques instants.",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Impossible de contacter Kafka : {exc}")
+
+    if remaining > 0 or not delivery_result["delivered"]:
+        detail = delivery_result["error"] or "message non confirmé par le broker dans le délai imparti (5s)"
+        raise HTTPException(status_code=503, detail=f"Échec de publication sur Kafka : {detail}")
+
+    return {
+        "status": "queued",
+        "user_id": user_id,
+        "message": "Séance envoyée pour traitement — le score sera recalculé automatiquement dans quelques instants.",
     }

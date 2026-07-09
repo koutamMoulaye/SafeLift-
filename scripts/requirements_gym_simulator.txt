@@ -1,0 +1,12 @@
+# Dependances pour scripts/simulate_gym_occupancy.py (Jalon 2, sous-etape 1/5).
+#
+# confluent-kafka choisi plutot que kafka-python : coherent avec
+# apache-airflow-providers-apache-kafka (airflow/requirements.txt), qui
+# s'appuie lui-meme sur confluent-kafka>=2.3.0 (bindings officiels
+# librdkafka, confirme via les metadonnees PyPI du provider) -- aucune
+# autre librairie Kafka Python n'etait deja utilisee dans le projet.
+confluent-kafka==2.6.1
+
+# Lecture de gold.dim_gym (app-postgres) au demarrage -- meme version que
+# dashboard/requirements.txt pour rester coherent dans le projet.
+psycopg2-binary==2.9.10
