@@ -4,7 +4,7 @@
 > session, meme sans historique de conversation. A lire EN PREMIER, avec
 > [PROGRESS.md](./PROGRESS.md) (Jalon 1, etapes 1 a 6, clos) et
 > [PROGRESS_JALON2.md](./PROGRESS_JALON2.md) (Jalon 2, streaming affluence,
-> en cours), avant de proposer quoi que ce soit.
+> clos), avant de proposer quoi que ce soit.
 >
 > Regle : ce fichier doit toujours refleter l'etat REEL du repo. Le mettre a
 > jour AVANT de considerer une etape terminee.
@@ -21,10 +21,12 @@ Le projet est organise en **jalons**. Le **Jalon 1** (6 etapes, voir
 le pipeline batch complet (Kaggle -> Bronze -> Silver -> Gold -> Serving ->
 AWS/Terraform -> gouvernance RGPD -> CI/CD) et est **clos depuis le
 2026-07-08**. Le **Jalon 2** (voir
-[PROGRESS_JALON2.md](./PROGRESS_JALON2.md)), demarre le 2026-07-09, ajoute un
-flux de **streaming temps reel** (affluence par salle de sport, Kafka ->
-Spark Structured Streaming) pour couvrir le Bloc 2 (pipelines temps reel) de
-la certification. Chaque etape/sous-etape doit etre livree de maniere 100%
+[PROGRESS_JALON2.md](./PROGRESS_JALON2.md)), demarre et **clos le
+2026-07-09** (5/5 sous-etapes), ajoute un flux de **streaming temps reel**
+(affluence par salle de sport, Kafka -> Spark Structured Streaming) et une
+boucle evenementielle utilisateur complete (Kafka -> Postgres -> trigger
+dbt) pour couvrir le Bloc 2 (pipelines temps reel) de la certification.
+Chaque etape/sous-etape doit etre livree de maniere 100%
 fonctionnelle (pas de pseudo-code, pas de TODO vague) avant de passer a la
 suivante.
 
@@ -885,6 +887,50 @@ pour le detail complet. Resume des decisions structurantes :
   bug de l'API) — confirme en decodant les octets bruts de la reponse HTTP
   et en inspectant les codepoints Unicode directement (`U+00E9` correct).
 
+### Jalon 2, sous-etape 5/5 — Verification globale + demo (2026-07-09, cloture du Jalon 2)
+
+Aucun nouveau developpement — verification bout-en-bout uniquement. Voir
+`PROGRESS_JALON2.md` pour le detail complet des mesures et
+`docs/DEMO_SCRIPT_JALON2.md` pour le support de soutenance. Resume des
+constats structurants :
+
+- **Le correctif `spark.cores.max=1` (bug de contention trouve en
+  sous-etape 3/5) tient DANS LA DUREE** : verifie sur une fenetre de 13
+  minutes (26 mesures/30s) avec les deux streams actifs simultanement.
+  Preuve directe et horodatee : `coresused` reste a `1/2` en continu,
+  bascule a `2/2` EXACTEMENT au moment d'un run dbt declenche par une
+  seance utilisateur soumise au milieu de la fenetre, puis revient a
+  `1/2` a la mesure suivante — le job batch acquiert bien son coeur libre
+  et le relache a la fin, contrairement au comportement bloque
+  d'avant-correctif.
+- **2e mesure independante du delai de recalcul de risque : 110s** (vs 70s
+  en sous-etape 3/5) — variance attribuee a la charge concurrente du
+  systeme. Le timeout de polling frontend (`dashboard.js`) a ete releve
+  de 120s a 180s en consequence (120s ne laissait plus qu'une marge de
+  10s face au pire cas observe). **Ne jamais fixer une marge de securite
+  sur une seule mesure quand une deuxieme est disponible.**
+- **Test reel de panne/reprise** (`docker compose stop`/`start
+  gym-simulator` pendant que les 11 autres services tournent) : aucun
+  crash en cascade, `spark-streaming-gym` continue sans erreur (les
+  micro-batches vides sont deja silencieusement ignores par le code
+  existant, `if total == 0: return` — comportement attendu, pas un
+  bug), reprise propre au redemarrage (`dim_gym` rechargee, numerotation
+  des batches Spark continue sans ecart). `RestartCount` reste a `0`
+  partout — confirme que l'arret etait volontaire, pas un crash suivi
+  d'un redemarrage automatique par `restart: unless-stopped`.
+- **`docs/DEMO_SCRIPT_JALON2.md`** : toutes les durees annoncees au jury
+  sont des mesures reelles, jamais devinees — le delai de recalcul est
+  deliberement presente comme une fourchette "1 a 2 minutes" (pas un
+  chiffre unique trop precis) precisement a cause de la variance 70s/110s
+  constatee. Inclut un plan de secours (grille de lecture `docker compose
+  ps` sans paniquer devant le jury) et 7 questions probables du jury avec
+  pistes de reponse courtes.
+- **Jalon 2 (5/5 sous-etapes) cloture le 2026-07-09** — 4 bugs reels
+  trouves et corriges au total sur l'ensemble du jalon (contention de
+  coeurs Spark, `dim_date` trop etroite, deduplication SSE cassee,
+  chemin/permissions au demarrage de `spark-streaming-gym`), tous
+  documentes avec cause racine et correctif, aucun masque silencieusement.
+
 ## Conventions de nommage
 
 - Services Docker Compose et conteneurs : prefixe `safelift-` (ex:
@@ -1006,7 +1052,26 @@ Resume :
    distincts sur une connexion SSE unique de 40s, aucune fuite de connexion
    Postgres apres deconnexion brutale. Voir PROGRESS_JALON2.md et
    GOLD_MODEL_DECISIONS.md section 12.
-5. ⏳ a faire — non definie.
+5. ✅ fait (2026-07-09, meme jour) — Verification globale + script de
+   demonstration (clot le Jalon 2, aucun nouveau developpement) : fenetre
+   de stabilite de 13 minutes en conditions reelles (26 mesures/30s,
+   allocation de coeurs Spark + statut/RestartCount des 4 services), avec
+   une seance utilisateur reelle declenchee au milieu (delai mesure : 110s,
+   2e mesure independante apres les 70s de la sous-etape 3/5 -- timeout de
+   polling frontend releve de 120s a 180s en consequence). **Preuve
+   horodatee que le correctif `spark.cores.max=1` tient dans la duree**
+   (`coresused` 1/2 -> 2/2 -> 1/2 exactement pendant le run dbt declenche,
+   puis retour a la normale). Test reel de panne/reprise
+   (`docker compose stop/start gym-simulator`) : les 11 autres services
+   restent `healthy`, aucun crash en cascade, `spark-streaming-gym`
+   continue sans erreur (micro-batches vides silencieusement ignores),
+   reprise propre au redemarrage (recharge `dim_gym`, `spark-streaming-gym`
+   reprend sans ecart de numerotation de batch). `docs/DEMO_SCRIPT_JALON2.md`
+   (nouveau) : script chronometre pour la soutenance, options de
+   transition pendant l'attente, plan de secours si un service ne repond
+   pas, 7 questions probables du jury avec pistes de reponse. **Jalon 2
+   (5/5 sous-etapes) cloture le 2026-07-09.** Voir PROGRESS_JALON2.md
+   (resume de cloture en fin de fichier).
 
 ## Prochaines actions prevues
 

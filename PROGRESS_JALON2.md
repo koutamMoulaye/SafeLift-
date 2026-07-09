@@ -19,13 +19,12 @@ ajoute un **flux de streaming temps reel** (affluence par salle de sport)
 pour rendre le Bloc 2 de la certification (pipelines temps reel)
 incontestable — perimetre distinct du Bloc 1 (deja couvert par le Jalon 1).
 
-Decoupage prevu (5 sous-etapes, seules les 1/5 a 4/5 sont traitees a ce
-stade — ne pas anticiper la suite sans demande explicite) :
+Decoupage (5 sous-etapes, toutes traitees — **Jalon 2 complet**) :
 1. Simulateur d'affluence + producteur Kafka — ✅ fait
 2. Consumer Spark Structured Streaming — ✅ fait
 3. Inputs utilisateur temps reel (Kafka -> raw -> dbt trigger) — ✅ fait
 4. Dashboard temps reel affluence (SSE) — ✅ fait
-5. (a definir)
+5. Verification globale + script de demonstration — ✅ fait
 
 ## Sous-etape 1/5 — Simulateur d'affluence + producteur Kafka — ✅ fait
 
@@ -634,7 +633,123 @@ esthetique final (alignement des cartes, lisibilite de la jauge sur fond
 sombre, fluidite visuelle de la pulsation). A confirmer par Moulaye sur
 http://localhost:18000, section "Affluence en direct" en bas de page.
 
-### Prochaine action
+## Sous-etape 5/5 — Verification globale + script de demonstration — ✅ fait
 
-Sous-etape 5/5 non definie a ce stade — ne pas anticiper sans demande
-explicite (meme regle que le Jalon 1).
+**Date** : 2026-07-09 (meme jour que les sous-etapes 1/5 a 4/5).
+
+**Perimetre explicitement borne** : verification bout-en-bout globale +
+script de demonstration pour la soutenance — **aucun nouveau
+developpement**, clot le Jalon 2.
+
+### 1. Fenetre de stabilite de 13 minutes, en conditions reelles
+
+**Objectif** : confirmer que le correctif `spark.cores.max=1` (bug de
+contention de coeurs Spark, trouve et corrige en sous-etape 3/5) **tient
+dans la duree**, pas seulement au moment ou il a ete applique, et qu'un
+input utilisateur declenche pendant que les deux streams tournent ne
+bloque rien.
+
+**Protocole** : script de supervision dedie
+(`stability_monitor.sh`, tmp de session), interrogeant toutes les 30s
+pendant 13 minutes : l'allocation de coeurs du master Spark
+(`http://spark-master:8080/json/`), le statut Docker et le
+`RestartCount` de `gym-simulator`/`spark-streaming-gym`/
+`user-inputs-consumer`/`dashboard`. Une seance utilisateur reelle
+declenchee manuellement au milieu de la fenetre (`POST /users/9/sessions`,
+"Neutral Chin", 25kg x 6 series x 12 reps).
+
+**Resultats (26 mesures, 2026-07-09T10:08:04Z -> 10:21:23Z)** :
+- **`coresused` reste a `1/2` en continu**, sauf une seule mesure a
+  `2/2` exactement au moment du run dbt declenche par la seance milieu de
+  fenetre (10:10:51Z) puis retour a `1/2` a la mesure suivante
+  (10:11:24Z) — **preuve directe et horodatee que le job batch a bien pu
+  acquerir son coeur libre et le relacher a la fin**, confirmant que le
+  correctif tient dans la duree (contrairement au comportement d'avant
+  correctif ou le job batch restait bloque indefiniment a 0 coeur).
+- **`RestartCount` reste a `0` pour les 4 services sur toute la fenetre**
+  (aucun crash).
+- **DAG `gold_dbt_run` declenche par la seance milieu de fenetre confirme
+  `success`** (`realtime_input_user9_7ce183e5`, soumission
+  `10:10:13.542Z` -> fin `10:12:03.175949Z`, **delai reel mesure : 110s**
+  -- 2e mesure independante apres les 70s de la sous-etape 3/5, variance
+  attribuee a la charge concurrente du systeme pendant cette fenetre de
+  stabilite). Score reellement mis a jour : zone `back`
+  (exercice "Neutral Chin") passe a `risk_score=0.00`, nouvelle ligne
+  `session_date=2026-07-09`.
+- **Timeout de polling frontend releve de 120s a 180s** suite a cette 2e
+  mesure (120s ne laissait plus qu'une marge de 10s face au pire cas
+  observe, juge insuffisant pour la fiabilite en conditions de demo) —
+  voir `dashboard/static/dashboard.js`.
+
+### 2. Test reel de panne/reprise (gym-simulator)
+
+**Protocole** : `docker compose stop gym-simulator` pendant que les 11
+autres services tournent, verification du comportement du reste du
+systeme, puis `docker compose start gym-simulator`, verification de la
+reprise.
+
+**Resultats** :
+- **Pendant l'arret** (10:22:06Z -> 10:24:05Z, ~2 minutes) : les 11 autres
+  services restent tous `healthy`. `GET /health` et `GET /users/9/risk`
+  (dashboard) repondent normalement (`200`). Le flux SSE
+  `/gyms/occupancy/stream` **reste ouvert** et continue de repondre avec
+  la derniere donnee connue (pas d'erreur, pas de fermeture de
+  connexion). `spark-streaming-gym` continue de tourner **sans la moindre
+  erreur** : plus aucune ligne `"Batch N : ... mise(s) a jour"` dans les
+  logs (micro-batches vides silencieusement ignores par le code existant,
+  `if total == 0: return`), comportement attendu et non un bug.
+- **Au redemarrage** : logs confirmes -- `gym-simulator` recharge
+  `gold.dim_gym` (5 salles) et republie immediatement des messages ;
+  `spark-streaming-gym` reprend la consommation des le message suivant
+  (`Batch 1542` juste apres `Batch 1541`, aucun ecart dans la numerotation
+  des batches malgre l'interruption de la source).
+- **`RestartCount` de tous les services reste a `0` apres le test** —
+  confirme que l'arret/redemarrage etait bien volontaire (`docker compose
+  stop`/`start`, pas un crash suivi d'un redemarrage automatique via
+  `restart: unless-stopped`), et qu'**aucun autre service n'a crash en
+  cascade** suite a l'arret de `gym-simulator`.
+
+### 3. Script de démonstration pour la soutenance
+
+**`docs/DEMO_SCRIPT_JALON2.md`** (nouveau) : script chronometre (6 etapes,
+~3-4 minutes hors questions), 2 options de transition pendant l'attente du
+recalcul (explication orale de l'architecture, ou affichage live du DAG
+Airflow), grille de lecture "que faire si un service ne repond pas" (sans
+paniquer devant le jury), et 7 questions probables du jury avec pistes de
+reponse courtes (SSE vs WebSocket, delai de recalcul, recommandation de
+creneau = ML ou pattern theorique, panne de service, montee en charge
+multi-utilisateurs, lab AWS). **Toutes les durees annoncees dans ce
+document sont des mesures reelles** (70s et 110s pour le recalcul,
+delibrement presentees comme une fourchette "1 a 2 minutes" au jury plutot
+qu'un chiffre unique trop precis).
+
+### Limite assumee
+
+Comme pour toutes les sous-etapes precedentes du Jalon 2 : **verification
+VISUELLE du rendu (jauges, pastille pulsante) toujours NON effectuee par
+Claude Code** (extension navigateur Chrome indisponible sur cette session
+comme sur toutes les precedentes). Les verifications de cette sous-etape
+portent sur la STABILITE et la RESILIENCE du systeme (mesures reelles,
+logs reels, codes HTTP reels), pas sur l'esthetique — a confirmer par
+Moulaye avant la soutenance, idealement en suivant le script de demo lui-meme
+comme repetition generale.
+
+## 🏁 Jalon 2 (sous-etapes 1/5 a 5/5) — complet
+
+Les 5 sous-etapes prevues sont livrees et verifiees en conditions reelles :
+
+| Sous-etape | Contenu | Statut |
+|---|---|---|
+| 1/5 | Simulateur d'affluence + producteur Kafka (`dim_gym`, topic dedie, service `gym-simulator`) | ✅ fait |
+| 2/5 | Consumer Spark Structured Streaming (`gold.gym_occupancy_live`, service `spark-streaming-gym`) | ✅ fait |
+| 3/5 | Inputs utilisateur temps reel (Kafka -> Postgres -> trigger dbt, formule de risque unique) | ✅ fait |
+| 4/5 | Dashboard temps reel affluence (SSE, recommandation de creneau) | ✅ fait |
+| 5/5 | Verification globale (stabilite 13 min, test de panne/reprise) + script de demo | ✅ fait |
+
+**4 bugs reels trouves et corriges pendant le developpement** (tous
+documentes en detail dans `data/gold/GOLD_MODEL_DECISIONS.md` sections
+9-12) : contention de coeurs Spark, `dim_date` trop etroite pour des
+dates futures, deduplication SSE cassee par l'inclusion de `server_time`,
+et le chemin `spark-submit`/cache Ivy/permissions de volume au demarrage
+de `spark-streaming-gym`. Aucun masque ou contourne silencieusement —
+chacun documente avec sa cause racine et son correctif.

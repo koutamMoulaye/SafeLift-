@@ -625,16 +625,17 @@ function applySimulatorAvailability() {
 // detecter un changement du risk_score sur la zone concernee, ou jusqu'a
 // LOG_SESSION_POLL_TIMEOUT_MS.
 //
-// Delai REEL mesure en conditions reelles (voir PROGRESS_JALON2.md
-// sous-etape 3/5, test end-to-end sur user_id=9) : ~70s entre la
-// soumission et la fin du run dbt (load_silver_to_postgres, seul step
-// Spark, domine le delai a lui seul, ~20s ; dbt_seed/dbt_run_staging/
-// fuzzy_match_exercises/dbt_run/dbt_test totalisent le reste). Timeout
-// fixe a 120s (marge x1.7 par rapport au delai reel observe), pas les 60s
-// initialement supposees avant mesure reelle -- ne JAMAIS deviner un delai
-// sans le mesurer sur ce projet.
+// Delai REEL mesure en conditions reelles, 2 mesures INDEPENDANTES (voir
+// PROGRESS_JALON2.md sous-etapes 3/5 et 5/5, tests end-to-end sur
+// user_id=9) : 70s puis 110s entre la soumission et la fin du run dbt --
+// la variance vient de la charge concurrente du systeme (ex. le job Spark
+// Structured Streaming de l'affluence tourne en continu en parallele).
+// Timeout fixe a 180s (marge x1.6 par rapport a la PIRE mesure observee,
+// 110s), releve de 120s (marge insuffisante face a la 2e mesure) -- ne
+// JAMAIS deviner un delai sans le mesurer sur ce projet, et ne jamais
+// fixer une marge sur une seule mesure quand plusieurs sont disponibles.
 const LOG_SESSION_POLL_INTERVAL_MS = 3000;
-const LOG_SESSION_POLL_TIMEOUT_MS = 120000;
+const LOG_SESSION_POLL_TIMEOUT_MS = 180000;
 let logSessionPollTimer = null;
 
 function stopLogSessionPolling() {
