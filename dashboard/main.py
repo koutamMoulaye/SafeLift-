@@ -13,16 +13,17 @@ pour rester coherent avec le reste du projet), via un petit pool de
 connexions (le service reste mono-instance, un pool simple suffit).
 """
 
+import asyncio
 import json
 import os
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.pool
 from confluent_kafka import Producer
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
@@ -569,4 +570,186 @@ def submit_user_session(user_id: int, payload: UserSessionInput) -> dict:
         "status": "queued",
         "user_id": user_id,
         "message": "Séance envoyée pour traitement — le score sera recalculé automatiquement dans quelques instants.",
+    }
+
+
+# =============================================================================
+# Affluence en direct (Jalon 2, sous-etape 4/5)
+#
+# Lit gold.gym_occupancy_live (maintenue a jour en continu par
+# spark/jobs/stream_gym_occupancy.py, sous-etape 2/5). DECISION DEJA ACTEE :
+# Server-Sent Events (SSE), pas de WebSocket, pas de polling cote client pour
+# CETTE fonctionnalite -- le mecanisme de polling deja en place pour le
+# recalcul de risque (sous-etape 3/5, dashboard.js) reste totalement
+# INCHANGE et independant.
+# =============================================================================
+
+# Intervalle d'interrogation cote serveur de gold.gym_occupancy_live --
+# coherent avec le rythme d'emission du simulateur (5 a 10s par salle, voir
+# scripts/simulate_gym_occupancy.py) et le trigger du job Spark (5s, voir
+# spark/jobs/stream_gym_occupancy.py) : interroger plus vite n'apporterait
+# aucune fraicheur supplementaire, la donnee ne change pas plus vite que ça.
+GYM_OCCUPANCY_SSE_POLL_SECONDS = 3
+
+GYM_OCCUPANCY_QUERY = """
+    select
+        go.gym_id,
+        dg.gym_name,
+        go.current_occupancy,
+        go.capacity,
+        go.occupancy_rate,
+        go.charge_category,
+        go.last_message_timestamp
+    from gold.gym_occupancy_live go
+    join gold.dim_gym dg on go.gym_id = dg.gym_id
+    order by go.gym_id
+"""
+
+
+@app.get("/gyms/occupancy/stream")
+async def stream_gym_occupancy(request: Request) -> StreamingResponse:
+    """Flux SSE (text/event-stream) de l'etat courant de toutes les salles.
+
+    Interroge gold.gym_occupancy_live toutes les GYM_OCCUPANCY_SSE_POLL_SECONDS
+    secondes cote serveur ; un evenement n'est repousse au client QUE si les
+    LIGNES retournees (gym_id/occupancy/...) ont reellement change depuis le
+    dernier envoi -- evite de spammer le client toutes les 3s si le
+    simulateur/le job Spark sont a l'arret ou que la valeur n'a pas bouge.
+    BUG REEL rencontre et corrige en testant : la comparaison portait
+    initialement sur le PAYLOAD COMPLET (incluant `server_time`, recalcule a
+    chaque iteration) -- `server_time` changeant toujours, la deduplication
+    ne se declenchait jamais (un evenement partait a chaque poll, meme sans
+    changement reel). Corrige en comparant uniquement les lignes de donnees,
+    `server_time` etant ajoute APRES coup au payload effectivement envoye.
+
+    Deconnexion propre : `request.is_disconnected()` (fourni par
+    Starlette/FastAPI) est verifie a CHAQUE iteration -- des que le client
+    ferme l'onglet/la connexion, la boucle s'arrete et le generateur se
+    termine, aucune connexion Postgres ni tache de fond ne reste ouverte
+    indefiniment (chaque requete SQL passe par `get_cursor()`, qui rend
+    toujours sa connexion au pool immediatement apres usage -- meme une
+    connexion SSE de plusieurs minutes ne retient donc JAMAIS une connexion
+    Postgres entre deux iterations).
+
+    Simplification assumee : psycopg2 (synchrone, pas asyncpg) est reutilise
+    ici comme partout ailleurs dans ce fichier -- chaque requete est tres
+    rapide (5 lignes maximum, une par salle de dim_gym) et le nombre de
+    clients SSE simultanes attendu pour une demo est faible ; un driver
+    asynchrone degre de complexite supplementaire non justifie a ce stade.
+    """
+
+    async def event_generator():
+        last_rows_json = None
+        while True:
+            if await request.is_disconnected():
+                break
+
+            with get_cursor() as cur:
+                cur.execute(GYM_OCCUPANCY_QUERY)
+                rows = cur.fetchall()
+
+            # Comparaison sur les LIGNES SEULES (pas sur le payload complet) :
+            # "server_time" est recalcule a chaque iteration et changerait
+            # donc TOUJOURS, meme si les donnees des salles sont identiques --
+            # l'inclure dans la comparaison aurait desactive silencieusement
+            # la deduplication demandee (bug reel constate en testant : un
+            # evenement etait envoye toutes les 3s meme sans changement reel).
+            rows_json = json.dumps(rows, default=str)
+
+            if rows_json != last_rows_json:
+                payload = {
+                    "gyms": rows,
+                    "server_time": datetime.now(timezone.utc).isoformat(),
+                }
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
+                last_rows_json = rows_json
+
+            await asyncio.sleep(GYM_OCCUPANCY_SSE_POLL_SECONDS)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+# Pattern d'affluence THEORIQUE -- DUPLIQUE DELIBEREMENT de peak_ratio() dans
+# scripts/simulate_gym_occupancy.py (memes seuils horaires exacts). Meme
+# raisonnement documente que MUSCLE_LABELS_FR en tete de ce fichier : ce
+# service tourne dans un conteneur/process Python separe de gym-simulator,
+# aucun mecanisme de partage de code entre les deux images Docker de ce
+# projet -- si peak_ratio() change un jour cote simulateur, cette fonction
+# DOIT etre mise a jour en miroir (voir CLAUDE.md et
+# data/gold/GOLD_MODEL_DECISIONS.md section 12).
+def _theoretical_occupancy_ratio(dt: datetime) -> float:
+    hour = dt.hour
+    is_weekend = dt.weekday() >= 5  # 5 = samedi, 6 = dimanche
+
+    if is_weekend:
+        return 0.45 if 10 <= hour < 19 else 0.05
+
+    if 7 <= hour < 9 or 18 <= hour < 21:
+        return 0.75
+    if 9 <= hour < 18 or 21 <= hour < 23:
+        return 0.35
+    return 0.05
+
+
+@app.get("/gyms/{gym_id}/best_slot")
+def get_gym_best_slot(gym_id: int) -> dict:
+    """Recommande le creneau le moins charge dans les 4 prochaines heures.
+
+    LIMITATION ASSUMEE ET EXPLICITE (voir data/gold/GOLD_MODEL_DECISIONS.md
+    section 12) : gold.gym_occupancy_live vient tout juste d'etre mise en
+    service (sous-etape 2/5) -- son historique reel est bien trop court pour
+    constituer une base statistiquement valable pour une vraie prediction.
+    Cette recommandation lit donc le PATTERN THEORIQUE code en dur dans le
+    simulateur (_theoretical_occupancy_ratio, duplique de
+    scripts/simulate_gym_occupancy.py) plutot qu'un historique observe --
+    CE N'EST PAS un modele predictif appris sur de la donnee reelle, c'est
+    une lecture directe des regles du generateur. Champ
+    `is_theoretical_pattern_based=true` renvoye explicitement pour que le
+    frontend puisse afficher cette nuance sans ambiguite (jamais presente
+    comme une vraie prediction basee sur l'historique observe).
+
+    Granularite d'evaluation : toutes les 30 minutes sur la fenetre de 4h --
+    suffisant puisque le pattern est une fonction en PALIERS (aucun segment
+    horaire ne dure moins d'1h dans _theoretical_occupancy_ratio), une
+    granularite plus fine n'apporterait aucune information supplementaire.
+    En cas d'egalite entre plusieurs creneaux au meme ratio minimal (ex.
+    toute une plage nocturne a 0.05), le PREMIER creneau atteignable est
+    retenu (recommandation la plus actionnable : "des que possible", pas le
+    plus tardif).
+    """
+    with get_cursor() as cur:
+        cur.execute("select gym_id, gym_name, capacity_max from gold.dim_gym where gym_id = %s", (gym_id,))
+        gym = cur.fetchone()
+        if gym is None:
+            raise HTTPException(status_code=404, detail=f"gym_id {gym_id} introuvable")
+
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for offset_minutes in range(0, 4 * 60 + 1, 30):
+        slot_dt = now + timedelta(minutes=offset_minutes)
+        candidates.append({"slot_dt": slot_dt, "ratio": _theoretical_occupancy_ratio(slot_dt)})
+
+    best = min(candidates, key=lambda c: c["ratio"])
+    capacity = gym["capacity_max"]
+
+    return {
+        "gym_id": gym_id,
+        "gym_name": gym["gym_name"],
+        "capacity": capacity,
+        "recommended_slot_utc": best["slot_dt"].isoformat(),
+        "expected_occupancy_rate": round(best["ratio"], 2),
+        "expected_occupancy_count": round(best["ratio"] * capacity),
+        "is_theoretical_pattern_based": True,
+        "methodology": (
+            "Estimation basée sur le pattern THÉORIQUE du simulateur d'affluence "
+            "(heures de pointe/creuses codées dans scripts/simulate_gym_occupancy.py), "
+            "PAS sur un historique réel observé — gold.gym_occupancy_live vient de "
+            "démarrer et son historique est encore trop court pour être "
+            "statistiquement valable. Limitation temporaire assumée, voir "
+            "data/gold/GOLD_MODEL_DECISIONS.md section 12."
+        ),
     }

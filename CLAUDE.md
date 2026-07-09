@@ -838,6 +838,53 @@ mesure). Resume des decisions structurantes :
   a cette mesure. `dbt test` : 72/72 PASS avec la ligne reelle en base,
   aucune regression sur les 2164 lignes historiques.
 
+### Jalon 2, sous-etape 4/5 — Dashboard temps reel affluence, SSE (2026-07-09)
+
+Voir `PROGRESS_JALON2.md` et `data/gold/GOLD_MODEL_DECISIONS.md` section 12
+pour le detail complet. Resume des decisions structurantes :
+
+- **Server-Sent Events, pas de WebSocket, pas de polling** — decision deja
+  actee, respectee. Independant du polling deja en place pour le recalcul
+  de risque (sous-etape 3/5), qui n'a pas ete touche.
+- **`GET /gyms/occupancy/stream` : evenement envoye UNIQUEMENT si les
+  donnees ont change** (comparaison sur les lignes seules, pas sur le
+  payload complet — voir bug ci-dessous) — interroge `gold.gym_occupancy_live`
+  toutes les 3s cote serveur, coherent avec le rythme d'emission du
+  simulateur (5-10s) et le trigger Spark (5s).
+- **Deconnexion propre garantie par construction** : chaque requete SQL
+  passe par le pool de connexions existant (`get_cursor()`, context
+  manager qui rend toujours sa connexion immediatement) — pas de connexion
+  Postgres dediee et retenue pour la duree de vie du flux SSE. Verifie
+  concretement (compteur `pg_stat_activity` identique avant/apres une
+  coupure brutale de connexion).
+- **`GET /gyms/{gym_id}/best_slot` : recommandation basee sur le PATTERN
+  THEORIQUE du simulateur (`peak_ratio()`, duplique dans
+  `_theoretical_occupancy_ratio()`), PAS sur un historique reel observe**
+  — `gold.gym_occupancy_live` vient de demarrer, historique trop court
+  pour etre statistiquement valable. Limitation EXPLICITEMENT assumee et
+  signalee (`is_theoretical_pattern_based: true` + champ `methodology`),
+  jamais presentee comme une vraie prediction. Meme raisonnement de
+  duplication documentee que `MUSCLE_LABELS_FR` (deux images Docker
+  separees, pas de mecanisme de partage de code).
+- **Bug reel trouve et corrige** : la deduplication comparait initialement
+  le PAYLOAD COMPLET (incluant `server_time`, qui change a chaque
+  iteration) — la deduplication ne se declenchait donc jamais, un
+  evenement partait toutes les 3s meme sans changement reel. **Constate
+  directement en testant** (2 evenements consecutifs avec des donnees
+  identiques observes via `curl -N`, alors que le simulateur emet toutes
+  les 5-10s). Corrige en comparant uniquement les lignes de donnees.
+- **Testee reellement en conditions de streaming continu** (pas un test
+  one-shot) : capture de 40s via `curl -N` sur une connexion HTTP UNIQUE
+  et continue — 7 evenements distincts, valeurs reellement differentes a
+  chaque fois, timestamps espaces irregulierement (6-9s, coherent avec le
+  cycle amont, pas un simple timer fixe). Aucune fuite de connexion
+  Postgres constatee apres deconnexion brutale du client.
+- **Artefact d'affichage UTF-8 (`basÃ©e` au lieu de `basée`) verifie
+  non-bug** : meme classe de probleme deja documentee pour Feature A
+  (encodage de la console Windows locale utilisee pour le test, pas un
+  bug de l'API) — confirme en decodant les octets bruts de la reponse HTTP
+  et en inspectant les codepoints Unicode directement (`U+00E9` correct).
+
 ## Conventions de nommage
 
 - Services Docker Compose et conteneurs : prefixe `safelift-` (ex:
@@ -945,7 +992,21 @@ Resume :
    corriges (contention de coeurs Spark entre spark-streaming-gym et les
    jobs batch ; dim_date trop etroite pour des dates 2026). Voir
    PROGRESS_JALON2.md et GOLD_MODEL_DECISIONS.md section 11.
-4-5. ⏳ a faire — non definies.
+4. ✅ fait (2026-07-09, meme jour) — Dashboard temps reel affluence (SSE) :
+   `GET /gyms/occupancy/stream` (Server-Sent Events, decision deja actee --
+   pas de WebSocket/polling pour cette fonctionnalite, independant du
+   polling existant du recalcul de risque), `GET /gyms/{gym_id}/best_slot`
+   (recommandation de creneau basee sur le pattern THEORIQUE du simulateur,
+   PAS un historique reel -- limitation assumee et documentee). Section
+   "Affluence en direct" cote dashboard (jauges par salle, pastille "EN
+   DIRECT" pulsante, EventSource natif avec reconnexion automatique). 1 bug
+   reel trouve et corrige (deduplication SSE cassee par l'inclusion de
+   `server_time` dans la comparaison -- constate directement via `curl -N`
+   montrant des evenements dupliques). Verifie reellement : 7 evenements
+   distincts sur une connexion SSE unique de 40s, aucune fuite de connexion
+   Postgres apres deconnexion brutale. Voir PROGRESS_JALON2.md et
+   GOLD_MODEL_DECISIONS.md section 12.
+5. ⏳ a faire — non definie.
 
 ## Prochaines actions prevues
 

@@ -19,12 +19,12 @@ ajoute un **flux de streaming temps reel** (affluence par salle de sport)
 pour rendre le Bloc 2 de la certification (pipelines temps reel)
 incontestable — perimetre distinct du Bloc 1 (deja couvert par le Jalon 1).
 
-Decoupage prevu (5 sous-etapes, seules les 1/5 a 3/5 sont traitees a ce
+Decoupage prevu (5 sous-etapes, seules les 1/5 a 4/5 sont traitees a ce
 stade — ne pas anticiper la suite sans demande explicite) :
 1. Simulateur d'affluence + producteur Kafka — ✅ fait
 2. Consumer Spark Structured Streaming — ✅ fait
 3. Inputs utilisateur temps reel (Kafka -> raw -> dbt trigger) — ✅ fait
-4. (a definir)
+4. Dashboard temps reel affluence (SSE) — ✅ fait
 5. (a definir)
 
 ## Sous-etape 1/5 — Simulateur d'affluence + producteur Kafka — ✅ fait
@@ -524,7 +524,117 @@ risque (decision deja actee : UNE SEULE formule, celle de dbt).
 - **Identifiants admin Airflow reutilises** pour l'authentification API du
   consumer (simplification assumee, pas de compte de service dedie).
 
+## Sous-etape 4/5 — Dashboard temps reel affluence (SSE) — ✅ fait
+
+**Date** : 2026-07-09 (meme jour que les sous-etapes 1/5 a 3/5).
+
+**Perimetre explicitement borne** : dashboard temps reel affluence
+UNIQUEMENT. Le mecanisme de polling deja en place pour le recalcul de
+risque (sous-etape 3/5) n'a pas ete touche.
+
+**Decision deja actee (rappel)** : Server-Sent Events (SSE) pour la courbe
+d'affluence — pas de WebSocket, pas de polling pour cette fonctionnalite.
+
+### Livre
+
+- **`GET /gyms/occupancy/stream`** (`dashboard/main.py`) : flux SSE,
+  interroge `gold.gym_occupancy_live` toutes les 3s cote serveur, ne
+  repousse un evenement que si les donnees ont reellement change.
+  Deconnexion geree via `request.is_disconnected()` (verifie a chaque
+  iteration), chaque requete SQL passe par le pool de connexions existant
+  (`get_cursor()`), aucune connexion retenue entre deux iterations.
+- **`GET /gyms/{gym_id}/best_slot`** : recommandation du creneau le moins
+  charge dans les 4 prochaines heures, basee sur le **pattern THEORIQUE**
+  du simulateur (`_theoretical_occupancy_ratio()`, duplique de `peak_ratio()`
+  dans `scripts/simulate_gym_occupancy.py`) — PAS sur un historique reel
+  observe (`gold.gym_occupancy_live` vient de demarrer, trop court pour
+  etre statistiquement valable). Champ `is_theoretical_pattern_based: true`
+  + `methodology` (texte) renvoyes explicitement. Voir
+  `data/gold/GOLD_MODEL_DECISIONS.md` section 12 pour le detail complet.
+- **Dashboard** : nouvelle section "Affluence en direct" (`index.html`) —
+  une carte par salle de `dim_gym` (jauge de remplissage colore par
+  `charge_category`), pastille "🔴 EN DIRECT" pulsante, panneau de
+  recommandation de creneau pour la salle selectionnee (clic sur une
+  carte). `dashboard.js` : `connectOccupancyStream()` (EventSource natif,
+  reconnexion automatique du navigateur JAMAIS desactivee/court-circuitee),
+  `renderOccupancyGrid()`, `selectGym()`/`loadBestSlot()`.
+
+### Bug reel rencontre et corrige pendant les tests
+
+**Deduplication SSE cassee** : la comparaison "donnees changees ?" portait
+initialement sur le PAYLOAD COMPLET envoye (incluant `server_time`,
+recalcule a chaque iteration) — `server_time` changeant toujours, la
+deduplication ne se declenchait jamais (un evenement partait a chaque poll
+de 3s, meme sans changement reel). **Constate directement en testant** (le
+premier `curl -N` de verification montrait 2 evenements consecutifs avec
+des donnees IDENTIQUES a 3s d'intervalle, alors que le simulateur emet
+toutes les 5-10s — signe evident que la dedup ne fonctionnait pas).
+Corrige en comparant uniquement les lignes de donnees (`gym_id`/
+`occupancy`/...), `server_time` etant ajoute apres coup au payload
+effectivement envoye. Voir GOLD_MODEL_DECISIONS.md section 12.
+
+### Verifications effectuees (toutes reelles, aucun dry-run)
+
+1. **`curl -N` sur 20s (test initial, AVANT correctif dedup)** : evenements
+   consecutifs avec donnees identiques constates -> bug identifie et
+   corrige (voir ci-dessus).
+2. **`curl -N` sur 20s (APRES correctif)** : 3 evenements, tous
+   `new-data` (aucun doublon).
+3. **`curl -N` sur 40s (verification finale, apres rebuild complet du
+   dashboard)** : **7 evenements distincts recus sur une connexion HTTP
+   UNIQUE et CONTINUE** (pas 7 requetes separees), valeurs de
+   `current_occupancy` genuinement differentes a chaque evenement
+   (52 -> 55 -> 49 -> 41 -> 58 -> 41 -> 50 pour `gym_id=1`), timestamps
+   `server_time` espaces de facon irreguliere (6 a 9s, coherent avec le
+   cycle du simulateur/Spark, pas un intervalle fixe de 3s -- confirme que
+   la dedup fonctionne, pas juste qu'un timer tourne).
+4. **Test de deconnexion propre** : nombre de connexions Postgres actives
+   (`pg_stat_activity`, utilisateur `safelift_app`) mesure a **3** avant
+   l'ouverture d'une connexion SSE, coupure brutale de la connexion apres
+   3s (`timeout 3 curl -N ...`), nombre de connexions Postgres remesure a
+   **3** juste apres -- **aucune fuite constatee**. Logs `uvicorn`
+   confirment la requete `GET /gyms/occupancy/stream` cloturee proprement
+   (`200 OK` logue apres la fin de la connexion, pas de requete bloquee
+   indefiniment).
+5. **`GET /gyms/{gym_id}/best_slot` teste sur les 5 salles reelles** :
+   toutes repondent `200`, `expected_occupancy_rate=0.35` (test effectue
+   ~09:48 UTC un jeudi, palier "modere" 9h-18h du pattern), 
+   `recommended_slot_utc` == l'instant present a quelques secondes pres
+   (coherent : aucun palier plus bas que 0.35 dans les 4h suivantes a
+   cette heure-la un jour de semaine, "maintenant" est bien optimal).
+   `GET /gyms/999/best_slot` (salle inexistante) -> `404` confirme.
+6. **Verification de l'encodage UTF-8** : un artefact d'affichage
+   suspect (`basÃ©e` au lieu de `basée`) observe dans un premier
+   temps sur la sortie de `python -m json.tool` dans le terminal Windows
+   local -- **confirme non-bug** en decodant les octets bruts de la
+   reponse HTTP directement (`urllib` + inspection des codepoints Unicode,
+   `U+00E9` = "é" confirme correct) : meme classe d'artefact que celui
+   deja documente en Feature A (encodage de la console Windows locale,
+   pas un bug de l'API).
+7. **Verification structurelle du frontend** (Node.js, navigateur
+   Chrome toujours indisponible dans cette session comme dans toutes les
+   precedentes) : `node --check dashboard.js` (syntaxe valide), 41
+   references `getElementById(...)` toutes resolues dans `index.html` (0
+   manquante), balises `<section>` (6/6) et `<div>` (24/24) equilibrees,
+   accolades CSS equilibrees (99/99).
+8. **Non-regression** : fichiers statiques (`/`, `dashboard.js`,
+   `dashboard.css`) tous `200` avec le nouveau contenu confirme present ;
+   les 12 services persistants du projet restent tous `healthy`.
+
+### Limite assumee
+
+**Verification VISUELLE du rendu (jauge de remplissage, pastille pulsante,
+mise a jour sans reload) NON effectuee par Claude Code** — extension
+navigateur Chrome indisponible sur cette session comme sur toutes les
+precedentes du projet. Verifications ci-dessus = preuve reelle et directe
+que le flux SSE fonctionne (evenements HTTP successifs sur connexion
+unique, donnees changeantes, deconnexion propre) et que le code
+frontend est structurellement correct, mais PAS confirmation du rendu
+esthetique final (alignement des cartes, lisibilite de la jauge sur fond
+sombre, fluidite visuelle de la pulsation). A confirmer par Moulaye sur
+http://localhost:18000, section "Affluence en direct" en bas de page.
+
 ### Prochaine action
 
-Sous-etape 4/5 non definie a ce stade — ne pas anticiper sans demande
+Sous-etape 5/5 non definie a ce stade — ne pas anticiper sans demande
 explicite (meme regle que le Jalon 1).

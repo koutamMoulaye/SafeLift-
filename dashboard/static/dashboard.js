@@ -800,6 +800,124 @@ function applyModeToUI() {
   }
 }
 
+// --- Affluence en direct (Jalon 2, sous-etape 4/5) ---
+// Server-Sent Events (decision deja actee : PAS de WebSocket, PAS de
+// polling pour cette fonctionnalite) -- totalement INDEPENDANT du
+// mecanisme de polling deja en place pour le recalcul de risque
+// (sous-etape 3/5, onLogSessionSubmit ci-dessus), qui reste inchange.
+
+// Couleurs par charge_category -- volontairement UN DICTIONNAIRE DISTINCT
+// de COLOR_BY_LEVEL (risque musculo-squelettique) : gold.gym_occupancy_live
+// produit "Faible"/"Moderee"/"Elevee" (spark/jobs/stream_gym_occupancy.py),
+// AVEC un e final double sur "Moderee"/"Elevee" -- alors que risk_level
+// produit "Faible"/"Modere"/"Eleve" (fact_risk_score.sql, sans le e final
+// double). Reutiliser COLOR_BY_LEVEL ici aurait fait rater le lookup pour
+// "Moderee"/"Elevee" (orthographe differente -> cle absente -> gris par
+// defaut, silencieusement) : bug potentiel evite en verifiant l'orthographe
+// exacte cote serveur avant d'ecrire ce dictionnaire.
+const OCCUPANCY_COLOR_BY_CATEGORY = {
+  Faible: "#2ecc71",
+  Moderee: "#f5a623",
+  Elevee: "#f0483e",
+};
+
+let occupancyEventSource = null;
+let selectedGymId = null;
+
+function connectOccupancyStream() {
+  if (occupancyEventSource) return; // deja connecte, ne pas dupliquer
+
+  occupancyEventSource = new EventSource("/gyms/occupancy/stream");
+  const badge = document.getElementById("live-badge");
+
+  occupancyEventSource.onopen = () => {
+    badge.classList.remove("live-badge-disconnected");
+  };
+
+  occupancyEventSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    renderOccupancyGrid(data.gyms);
+  };
+
+  // EventSource se RECONNECTE AUTOMATIQUEMENT (comportement natif du
+  // navigateur, jamais desactive/court-circuite ici) -- onerror se contente
+  // de refleter visuellement l'etat "deconnexion en cours" pendant la
+  // tentative de reconnexion.
+  occupancyEventSource.onerror = () => {
+    badge.classList.add("live-badge-disconnected");
+  };
+}
+
+function renderOccupancyGrid(gyms) {
+  const grid = document.getElementById("occupancy-grid");
+  const loading = document.getElementById("occupancy-loading");
+  if (loading) loading.remove();
+
+  gyms.forEach((g) => {
+    let card = grid.querySelector(`[data-gym-id="${g.gym_id}"]`);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "gym-card";
+      card.dataset.gymId = g.gym_id;
+      card.addEventListener("click", () => selectGym(g.gym_id));
+      grid.appendChild(card);
+    }
+
+    const pct = Math.round(parseFloat(g.occupancy_rate) * 100);
+    const color = OCCUPANCY_COLOR_BY_CATEGORY[g.charge_category] || COLOR_NO_DATA;
+    card.classList.toggle("selected", g.gym_id === selectedGymId);
+    card.innerHTML = `
+      <h3>${g.gym_name}</h3>
+      <div class="gym-gauge-track"><div class="gym-gauge-fill" style="width:${pct}%;background:${color}"></div></div>
+      <p class="gym-occupancy-text">${g.current_occupancy} / ${g.capacity} personnes (${pct}%) — <span class="gym-charge-badge" style="color:${color}">${g.charge_category}</span></p>
+      <p class="gym-updated-at">Dernier message : ${new Date(g.last_message_timestamp).toLocaleTimeString("fr-FR")}</p>
+    `;
+  });
+
+  // Auto-selection de la 1re salle au tout premier evenement recu, pour
+  // que le panneau de recommandation ne reste jamais vide par defaut.
+  if (selectedGymId === null && gyms.length > 0) {
+    selectGym(gyms[0].gym_id);
+  }
+}
+
+function selectGym(gymId) {
+  selectedGymId = gymId;
+  document.querySelectorAll(".gym-card").forEach((el) => {
+    el.classList.toggle("selected", parseInt(el.dataset.gymId, 10) === gymId);
+  });
+  loadBestSlot(gymId);
+}
+
+async function loadBestSlot(gymId) {
+  const panel = document.getElementById("occupancy-best-slot");
+  panel.innerHTML = '<p class="placeholder">Calcul de la recommandation...</p>';
+
+  let data;
+  try {
+    const res = await fetch(`/gyms/${gymId}/best_slot`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    panel.innerHTML = '<p class="placeholder">Recommandation indisponible pour le moment.</p>';
+    return;
+  }
+
+  const slotDate = new Date(data.recommended_slot_utc);
+  const timeLabel = slotDate.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const isToday = slotDate.toDateString() === new Date().toDateString();
+  const dayLabel = isToday ? "aujourd'hui" : "demain";
+  const pct = Math.round(data.expected_occupancy_rate * 100);
+
+  panel.innerHTML = `
+    <p class="occupancy-recommendation">
+      Moins de monde prévu <strong>${dayLabel} vers ${timeLabel}</strong> à ${data.gym_name}
+      (environ <strong>${pct}%</strong> de la capacité, soit ~${data.expected_occupancy_count} personnes).
+    </p>
+    <p class="occupancy-methodology-note">${data.methodology}</p>
+  `;
+}
+
 function init() {
   document.getElementById("user-select").addEventListener("change", onUserChange);
   document.getElementById("scenario-select").addEventListener("change", onScenarioChange);
@@ -818,6 +936,8 @@ function init() {
 
   document.getElementById("log-session-submit").addEventListener("click", onLogSessionSubmit);
   applyLogSessionAvailability();
+
+  connectOccupancyStream();
 
   loadUsers();
 }

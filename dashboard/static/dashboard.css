@@ -540,3 +540,137 @@ h2 {
   border-color: var(--color-modere);
   color: var(--color-modere);
 }
+
+/* --- Affluence en direct (Jalon 2, sous-etape 4/5, SSE) --- */
+
+.occupancy-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px;
+  margin-top: 20px;
+}
+
+.occupancy-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.occupancy-header h2 {
+  margin: 0;
+}
+
+/* Pastille "EN DIRECT" : pulsation douce (pas criarde) pour signaler
+   visuellement qu'il s'agit de vrai temps reel, pas d'un chiffre statique. */
+.live-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--color-faible);
+  color: var(--color-faible);
+  animation: live-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Etat "deconnecte" pendant la reconnexion automatique d'EventSource --
+   reconnexion geree NATIVEMENT par le navigateur (comportement par defaut,
+   jamais desactive cote code, voir dashboard.js). */
+.live-badge.live-badge-disconnected {
+  border-color: var(--text-muted);
+  color: var(--text-muted);
+  animation: none;
+}
+
+.occupancy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.gym-card {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+
+.gym-card:hover {
+  border-color: var(--accent-teal);
+}
+
+.gym-card.selected {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 1px var(--accent-teal);
+}
+
+.gym-card h3 {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+}
+
+.gym-card-meta {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.gym-gauge-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.gym-gauge-fill {
+  height: 100%;
+  transition: width 0.6s ease, background-color 0.6s ease;
+}
+
+.gym-occupancy-text {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+}
+
+.gym-charge-badge {
+  font-weight: 700;
+}
+
+.gym-updated-at {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.occupancy-best-slot {
+  margin-top: 16px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.occupancy-recommendation {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.occupancy-methodology-note {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+}

@@ -803,6 +803,98 @@ non mesuree) a **120s** suite a cette mesure reelle, avec marge.
 `dbt test` : 72/72 PASS avec la ligne reelle en base (pas de regression
 sur les 2164 lignes historiques, `coalesce` verifie neutre pour elles).
 
+## 12. Affluence en direct (SSE) et recommandation de creneau (Jalon 2, sous-etape 4/5)
+
+**Contexte** : le dashboard affiche desormais l'etat de `gold.gym_occupancy_live`
+en direct (mise a jour continue par `spark/jobs/stream_gym_occupancy.py`,
+sous-etape 2/5), via Server-Sent Events (**decision deja actee** : SSE,
+pas de WebSocket, pas de polling pour cette fonctionnalite precise — le
+polling existant du recalcul de risque, sous-etape 3/5, est totalement
+independant et reste inchange).
+
+### `GET /gyms/occupancy/stream` — SSE avec deduplication
+
+Interroge `gold.gym_occupancy_live` toutes les 3 secondes cote serveur
+(`GYM_OCCUPANCY_SSE_POLL_SECONDS`, cf. `dashboard/main.py`) — coherent avec
+le rythme d'emission du simulateur (5-10s/salle) et le trigger du job Spark
+(5s) : interroger plus vite n'apporterait aucune fraicheur supplementaire.
+Un evenement n'est envoye au client QUE si les donnees ont reellement
+change depuis le dernier envoi.
+
+**BUG REEL rencontre et corrige en testant** : la comparaison de
+deduplication portait initialement sur le PAYLOAD COMPLET envoye au
+client, qui inclut `server_time` (recalcule a *chaque* iteration). Comme
+`server_time` change systematiquement, la comparaison ne detectait jamais
+une "absence de changement" — un evenement partait toutes les 3s meme sans
+changement reel des donnees, a l'oppose du comportement demande ("pas
+besoin de repousser si rien n'a changé"). Corrige en comparant uniquement
+les LIGNES de donnees (`gym_id`/`occupancy`/...), `server_time` etant
+ajoute seulement au payload effectivement envoye, apres la comparaison.
+**Verifie concretement apres correctif** : capture reelle de 40s via
+`curl -N`, 7 evenements distincts recus, tous correspondant a un
+changement reel de donnees (aucun doublon) — voir PROGRESS_JALON2.md pour
+le detail complet de la capture.
+
+**Deconnexion propre** : `await request.is_disconnected()` verifie a chaque
+iteration de la boucle — des que le client ferme l'onglet, la boucle
+s'arrete et le generateur se termine. Chaque requete SQL passe par
+`get_cursor()` (context manager qui rend toujours sa connexion au pool
+immediatement apres usage), donc **aucune connexion Postgres n'est jamais
+retenue entre deux iterations**, meme pour une connexion SSE de plusieurs
+minutes. Verifie concretement : nombre de connexions Postgres actives
+(`pg_stat_activity`) identique avant/apres une coupure brutale de la
+connexion SSE (3 dans les deux cas).
+
+**Simplification assumee** : psycopg2 synchrone (pas asyncpg) reutilise
+ici comme partout ailleurs dans `dashboard/main.py` — chaque requete est
+tres rapide (5 lignes maximum) et le nombre de clients SSE simultanes
+attendu pour une demo est faible ; un driver Postgres asynchrone
+introduirait une complexite non justifiee a ce stade.
+
+### `GET /gyms/{gym_id}/best_slot` — recommandation de creneau
+
+**LIMITATION ASSUMEE ET EXPLICITE, cœur de cette fonctionnalite** :
+`gold.gym_occupancy_live` vient tout juste d'etre mise en service
+(sous-etape 2/5) — son historique reel est bien trop court pour constituer
+une base statistiquement valable pour une vraie prediction basee sur de la
+donnee observee. La recommandation lit donc le **PATTERN THEORIQUE** code
+en dur dans le simulateur (`peak_ratio()`, `scripts/simulate_gym_occupancy.py`)
+plutot qu'un historique reel — **ce n'est PAS un modele predictif appris
+sur de la donnee, c'est une lecture directe des regles du generateur**.
+Champ `is_theoretical_pattern_based: true` renvoye explicitement dans
+chaque reponse pour que le frontend (et tout consommateur futur de l'API)
+puisse afficher cette nuance sans ambiguite — jamais presente comme une
+vraie prediction basee sur l'historique observe. Le champ `methodology`
+(texte libre, affiche tel quel dans le panneau du dashboard) porte la
+meme explication en langage clair.
+
+**`_theoretical_occupancy_ratio()` dans `dashboard/main.py` : DUPLIQUEE
+DELIBEREMENT** de `peak_ratio()` (`scripts/simulate_gym_occupancy.py`),
+memes seuils horaires exacts — meme raisonnement deja documente pour
+`MUSCLE_LABELS_FR` (section conventions, CLAUDE.md) : ces deux services
+tournent dans des conteneurs/processus Python separes, sans mecanisme de
+partage de code entre les images Docker de ce projet. **Si `peak_ratio()`
+change un jour cote simulateur, cette fonction DOIT etre mise a jour en
+miroir** — pas de synchronisation automatique entre les deux.
+
+**Granularite d'evaluation** : toutes les 30 minutes sur une fenetre de 4h
+(9 points) — suffisant puisque le pattern est une fonction en PALIERS
+(aucun segment horaire ne dure moins d'1h dans `_theoretical_occupancy_ratio`),
+une granularite plus fine n'apporterait aucune information supplementaire.
+En cas d'egalite entre plusieurs creneaux au meme ratio minimal (frequent :
+toute une plage horaire partage le meme palier), le PREMIER creneau
+atteignable est retenu — recommandation la plus actionnable ("des que
+possible"), pas la plus tardive.
+
+**Verifie concretement sur les 5 salles** (test reel a ~09:48 UTC un
+jeudi, donc dans le palier "modere" 9h-18h, ratio 0.35) : les 5 endpoints
+`GET /gyms/{1..5}/best_slot` renvoient tous `expected_occupancy_rate=0.35`
+avec `recommended_slot_utc` == l'instant present (a quelques secondes
+pres) — coherent avec le pattern (aucun palier plus bas que 0.35
+n'apparait dans les 4h suivantes a cette heure-la un jour de semaine, donc
+"maintenant" est bien le meilleur creneau atteignable, comportement
+attendu et non un bug).
+
 ---
 
 ## Resultats d'execution (chiffres reels, DAG `gold_dbt_run`)

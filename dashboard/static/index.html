@@ -275,6 +275,30 @@
       <p id="log-session-status" class="log-session-status"></p>
     </div>
   </section>
+
+  <!-- Affluence en direct (Jalon 2, sous-etape 4/5) : Server-Sent Events
+       (PAS de WebSocket, PAS de polling -- decision deja actee), independant
+       du selecteur utilisateur/mode demo ci-dessus (les salles de dim_gym
+       n'ont aucun lien avec les utilisateurs gym_members). Voir
+       dashboard.js pour la connexion EventSource et
+       data/gold/GOLD_MODEL_DECISIONS.md section 12 pour la recommandation
+       de creneau (limitation assumee : pattern theorique du simulateur,
+       pas un historique reel observe). -->
+  <section class="occupancy-panel" id="occupancy-panel">
+    <div class="occupancy-header">
+      <h2>Affluence en direct</h2>
+      <span class="live-badge" id="live-badge">🔴 EN DIRECT</span>
+    </div>
+    <p class="placeholder">Cliquez sur une salle pour voir le créneau le moins chargé recommandé dans les 4 prochaines heures.</p>
+
+    <div class="occupancy-grid" id="occupancy-grid">
+      <p class="placeholder" id="occupancy-loading">Connexion au flux d'affluence...</p>
+    </div>
+
+    <div id="occupancy-best-slot" class="occupancy-best-slot">
+      <p class="placeholder">Sélectionnez une salle pour voir la recommandation de créneau.</p>
+    </div>
+  </section>
 </main>
 
 <script src="/static/dashboard.js"></script>
