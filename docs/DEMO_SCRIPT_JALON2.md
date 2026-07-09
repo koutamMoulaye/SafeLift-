@@ -21,6 +21,13 @@
 > streaming d'affluence tourne en continu en parallèle). **Annoncer
 > "environ 1 à 2 minutes" au jury plutôt qu'un chiffre unique trop
 > précis** — mieux vaut annoncer large et faire plus vite que l'inverse.
+>
+> **Comment utiliser ce document le jour J** : les phrases entre guillemets
+> ci-dessous sont des EXEMPLES, pas un texte à réciter par cœur — les
+> réciter mot pour mot au jury sonnerait artificiel, et un trou de mémoire
+> en plein milieu serait pire qu'une phrase plus simple dite avec ses
+> propres mots. Le plus important est de retenir les 2-3 idées listées
+> juste avant/après chaque citation, pas la formulation exacte.
 
 ## 1. Ce que ce Jalon démontre (à dire en une phrase d'intro)
 
@@ -55,16 +62,25 @@ Ne jamais laisser un silence de 70s face au jury. Deux options, à choisir
 selon le matériel disponible le jour J :
 
 **Option A — expliquer l'architecture à l'oral (aucun matériel
-supplémentaire requis)** : dérouler la chaîne exacte en cours d'exécution
+supplémentaire requis)** : pas besoin d'un texte appris par cœur, juste
+retenir ces **4 idées, dans l'ordre**, et les dire avec ses propres mots
 pendant que le jury regarde l'indicateur "Recalcul en cours..." :
-> *"Ce qui se passe là : le formulaire a publié un message JSON sur le
-> topic Kafka `safelift-user-inputs`. Un consumer Python dédié — un
-> processus complètement séparé du dashboard — vient de le lire, l'a
-> inséré dans une table Postgres brute, et vient de déclencher via l'API
-> REST d'Airflow un run complet du pipeline dbt qu'on a vu au Jalon 1 :
-> chargement Silver→Postgres, puis les modèles staging et marts, jusqu'à
-> `fact_risk_score`. C'est la MÊME formule de calcul que celle du Jalon 1,
-> appliquée en direct — on ne duplique jamais la logique de risque."*
+
+1. La séance saisie dans le formulaire part d'abord sur Kafka (le même
+   principe que pour l'affluence en direct, montrée juste avant).
+2. Un programme séparé du dashboard lit ce message et l'enregistre dans
+   la base de données.
+3. Ce même programme relance ensuite tout le calcul dbt vu au Jalon 1
+   (celui qui construit le tableau de bord de risque).
+4. **Le point important à faire ressortir** : c'est exactement le même
+   calcul que celui déjà montré au Jalon 1 — rien n'est recalculé "à la
+   main" ou en double, c'est le même moteur qui tourne à nouveau.
+
+Exemple de formulation si besoin d'un point de départ (à adapter, pas à
+réciter) :
+> *"Là, le message vient d'être envoyé sur Kafka, un programme en
+> arrière-plan va l'enregistrer puis relancer le même calcul dbt que celui
+> du Jalon 1 — rien n'est dupliqué, c'est le même moteur."*
 
 **Option B — montrer le DAG en cours d'exécution dans l'UI Airflow (si un
 2e écran/onglet est prêt à l'avance)** : ouvrir

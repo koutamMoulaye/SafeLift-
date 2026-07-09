@@ -1,10 +1,18 @@
 """SafeLift — Chargement Silver -> Postgres (schema raw), pour alimenter dbt.
 
 dbt (adaptateur dbt-postgres) opere sur une base SQL, pas directement sur des
-fichiers Parquet. Ce job Spark relit les 4 tables Silver (data/silver/*) et
+fichiers Parquet. Ce job Spark relit les tables Silver (data/silver/*) et
 les ecrit telles quelles dans le schema `raw` de la base applicative
 (app-postgres), via JDBC. dbt part ensuite de ces tables `raw.*` comme
 sources pour construire le modele en etoile (staging -> marts).
+
+Reutilise pour la nutrition (Jalon 3, sous-etape 1/6, table
+"usda_nutrition") -- meme mecanisme que pour les 4 tables Kaggle
+d'origine, invoque a la fois par gold_dbt_run.py (pipeline Kaggle) et par
+nutrition_ingestion.py (pipeline nutrition, domaine independant) : chaque
+run recharge TOUTES les tables de TABLES ci-dessous, y compris celles hors
+du domaine du DAG appelant -- leger surcout (quelques secondes par table)
+accepte pour ne pas dupliquer ce script.
 
 Mode d'ecriture : "overwrite" (table recreee a chaque run). Coherent avec
 Silver, qui est deja une vue cumulative recalculee entierement a chaque
@@ -30,6 +38,7 @@ TABLES = {
     "600k_fitness_detailed": ["level_list", "goal_list"],
     "gym_members": [],
     "weight_training": [],
+    "usda_nutrition": [],
 }
 
 JDBC_URL = "jdbc:postgresql://app-postgres:5432/safelift_dwh"

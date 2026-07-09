@@ -895,6 +895,172 @@ n'apparait dans les 4h suivantes a cette heure-la un jour de semaine, donc
 "maintenant" est bien le meilleur creneau atteignable, comportement
 attendu et non un bug).
 
+## 13. Nutrition — dim_nutrition + fact_nutrition_target (Jalon 3, sous-etape 1/6)
+
+**Contexte** : demarrage du Jalon 3 (nutrition + ML bonus). Cette
+sous-etape couvre l'ingestion d'un catalogue d'aliments (API USDA
+FoodData Central) et le calcul de besoins nutritionnels cibles par
+utilisateur (BMR/TDEE/proteines), a partir des donnees deja presentes
+dans `dim_user` (source `gym_members`, Jalon 1). Pas de dashboard a ce
+stade.
+
+### ⚠️ Rappel du cadre ethique (a repeter a chaque usage de ces donnees)
+
+**Les formules ci-dessous sont des formules STANDARD de la litterature
+sportive generaliste, appliquees de facon deterministe — CE NE SONT PAS
+des recommandations medicales ou nutritionnelles personnalisees.**
+SafeLift ne remplace ni un coach sportif diplome, ni un medecin, ni un
+dieteticien — ce rappel etait deja pose au lancement du projet et reste
+valable ici a l'identique. Les valeurs de `fact_nutrition_target` sont
+des ESTIMATIONS a but pedagogique/demo (certification RNCP36739), issues
+d'equations publiees mais appliquees sans aucun avis professionnel
+individualise (pas d'historique medical, pas de pathologie prise en
+compte, pas de grossesse/allaitement pris en compte, etc.). Ne jamais
+presenter ces chiffres comme un plan nutritionnel pret a suivre.
+
+### 13.1 Collecte USDA FoodData Central (`airflow/dags/nutrition_ingestion.py`)
+
+- **Endpoint utilise : `/foods/search`**, pas `/food/{fdcId}` — choisi
+  pour le rapport simplicite/couverture demande : une seule requete par
+  mot-cle renvoie directement plusieurs aliments AVEC leurs nutriments
+  deja inclus (`foodNutrients`), alors que `/food/{fdcId}` aurait exige un
+  appel individuel par aliment deja identifie (donc un aller-retour
+  supplementaire pour d'abord obtenir les `fdcId`).
+- **~31 mots-cles de recherche interroges** (proteines, feculents/glucides,
+  legumes, fruits, matieres grasses/divers — voir `FOOD_KEYWORDS` dans le
+  DAG), 4 resultats maximum par mot-cle, deduplication par `fdcId` ->
+  cible 50-100 aliments distincts (PAS une aspiration complete du
+  catalogue USDA, qui compte ~300k entrees — hors sujet et inutilement
+  lent pour ce projet).
+- **`dataType` restreint a `Foundation,SR Legacy`** : jeux de donnees de
+  reference USDA (aliments bruts/peu transformes), valeurs nutritionnelles
+  fiables et **systematiquement exprimees par 100g** — exclut
+  volontairement `Branded` (produits industriels de marque, tres nombreux
+  et bruyants pour une recherche par mot-cle generique, avec des portions
+  variables) et `Survey (FNDDS)`.
+- **IDs de nutriments USDA utilises** (identifiants stables du referentiel
+  FoodData Central, verifies sur des reponses reelles de l'API) :
+  `1008` = Energy (kcal), `1003` = Protein (g), `1004` = Total lipid/fat
+  (g), `1005` = Carbohydrate by difference (g).
+- **Aucune conversion d'unite appliquee** : les 4 macro-nutriments sont
+  deja exprimes par 100g dans les dataType interroges — verifie a la
+  source (documentation USDA FoodData Central) et confirme sur les
+  echantillons reels recuperes (voir PROGRESS_JALON3.md pour les valeurs
+  obtenues).
+- **Aliment ignore (pas d'imputation inventee) si un des 4 macro-nutriments
+  centraux est absent** de la reponse API pour cet aliment — compte des
+  aliments ignores loggue explicitement, jamais une table Bronze
+  silencieusement incomplete.
+- **Cle API (`USDA_API_KEY`) jamais en dur, jamais loggee meme
+  partiellement** : variable d'environnement uniquement
+  (`docker-compose.yml`, `x-airflow-common-env`), toute chaine d'erreur
+  passee au logger est systematiquement filtree par `_redact_secret()`
+  avant d'etre ecrite (une exception `requests` peut contenir l'URL
+  complete avec la cle en parametre de requete — jamais loggee telle
+  quelle).
+- **Rate limit / indisponibilite API** : retry avec backoff fixe (3
+  tentatives, 5s d'attente) sur HTTP 429 (rate limit) et erreurs reseau
+  transitoires ; **echec EXPLICITE de la task Airflow** (exception levee,
+  pas de table Bronze partielle presentee comme complete) si l'API reste
+  indisponible apres epuisement des tentatives pour un mot-cle donne.
+
+### 13.2 `dim_nutrition` — pipeline Bronze -> Silver -> Gold
+
+Meme pattern que le pipeline Kaggle existant (Jalon 1), DAG
+`nutrition_ingestion` **self-contained** (independant de
+`bronze_ingestion`/`silver_transformation`/`gold_dbt_run` — domaine
+different) :
+1. `ingest_usda_nutrition` (PythonOperator) : appel API -> Bronze
+   (`data/bronze/usda_nutrition/ingestion_date={{ ds }}/`, idempotent,
+   meme convention que `bronze_ingestion.py`).
+2. `silver_usda_nutrition` (spark-submit) : dedup par `fdc_id`, trim
+   `food_name` -> Silver.
+3. `load_usda_nutrition_to_postgres` (spark-submit) : **reutilise
+   `spark/jobs/load_silver_to_postgres.py` existant**, `usda_nutrition`
+   simplement ajoutee au dictionnaire `TABLES` — recharge au passage les 4
+   tables Kaggle existantes (leger surcout de quelques secondes accepte
+   pour ne pas dupliquer ce script de chargement).
+4. `dbt_run_nutrition`/`dbt_test_nutrition` : **`dbt run --select
+   stg_usda_nutrition dim_nutrition fact_nutrition_target`** (scope
+   restreint, PAS tout `gold_dbt_run`) — `fact_nutrition_target` ne
+   depend que de `dim_user` deja construite, inutile de retraiter tout le
+   pipeline Kaggle (matching d'exercices, etc.) pour une ingestion
+   nutrition.
+
+### 13.3 `fact_nutrition_target` — formules et hypotheses
+
+**BMR (Basal Metabolic Rate) — equation de Mifflin-St Jeor (1990)**,
+formule standard la plus citee dans la litterature pour estimer le
+metabolisme de base a partir du poids/taille/age/sexe (a l'origine
+publiee dans *A new predictive equation for resting energy expenditure
+in healthy individuals*, American Journal of Clinical Nutrition) :
+
+```
+Homme  : BMR = 10 x poids(kg) + 6.25 x taille(cm) - 5 x age(annees) + 5
+Femme  : BMR = 10 x poids(kg) + 6.25 x taille(cm) - 5 x age(annees) - 161
+```
+
+`gender` de `gym_members` ne contient que 2 valeurs (`Male`/`Female`,
+verifie sur les 973 lignes) — aucune branche de repli codee : un `gender`
+inattendu produirait un `bmr_kcal` NULL, detecte explicitement par le
+test `not_null` sur `fact_nutrition_target.bmr_kcal` plutot que suppose
+silencieusement.
+
+**TDEE (Total Daily Energy Expenditure) = BMR x facteur d'activite.**
+Facteur deduit de `workout_frequency_days_per_week` (`gym_members`),
+mapping standard (tables Harris-Benedict/Mifflin usuelles) :
+
+| Jours d'entrainement/semaine | Facteur d'activite | Categorie |
+|---|---|---|
+| ≤ 1 (jamais observe dans ce dataset) | 1.2 | Sedentaire |
+| 2 | 1.375 | Legerement actif |
+| 3 | 1.55 | Moderement actif |
+| 4 | 1.725 | Actif |
+| ≥ 5 | 1.9 | Tres actif |
+
+**`gym_members` ne couvre que 2 a 5 jours/semaine** (verifie : 197
+utilisateurs a 2j, 368 a 3j, 306 a 4j, 102 a 5j — aucun a 0, 1, 6 ou 7).
+Les paliers ≤1 et ≥6 restent codes (valeurs 1.2/1.9 reprises des tables
+standard) par robustesse si un profil futur en sortait, mais ne sont
+**jamais exerces par les donnees actuelles** — constat honnete, pas
+masque.
+
+**Besoin proteique cible = `protein_g_per_kg_target` x poids(kg)`.**
+`protein_g_per_kg_target` deduit de `experience_level` (`gym_members`,
+valeurs 1/2/3), dans la fourchette **1.6 a 2.2 g/kg** couramment citee
+pour les pratiquants de musculation/fitness (ordre de grandeur repris de
+positions de societes savantes en nutrition sportive, ex. ISSN — voir
+limite ci-dessous) :
+
+| `experience_level` | `protein_g_per_kg_target` | Justification |
+|---|---|---|
+| 1 (debutant) | 1.6 g/kg | Borne basse de la fourchette usuelle — historique d'entrainement/masse musculaire a construire plus limites |
+| 2 (intermediaire) | 1.9 g/kg | Milieu de fourchette |
+| 3 (avance) | 2.2 g/kg | Borne haute — volume d'entrainement et masse musculaire a soutenir generalement plus eleves |
+
+**Limite assumee** : ce mapping `experience_level -> g/kg` est une
+**simplification deliberee** du critere demande (task : "proposer un
+critere simple et documente") — `experience_level` est un proxy indirect
+de l'anciennete/l'intensite d'entrainement, PAS une mesure directe de
+masse musculaire ou d'objectif (prise de masse/seche/maintien, non
+disponible dans `gym_members`). Documente comme telle, pas presente comme
+une methode de calcul validee scientifiquement pour CE mapping precis
+(contrairement a la fourchette 1.6-2.2 g/kg elle-meme, qui est bien
+issue de la litterature).
+
+### 13.4 Tests dbt (garde-fous, pas des bornes medicales exactes)
+
+- `assert_tdee_within_plausible_range.sql` : `tdee_kcal` toujours defini,
+  entre 1000 et 6000 kcal/jour — detecte un bug de formule (ex. conversion
+  d'unite oubliee), pas une verification medicale.
+- `assert_protein_target_plausible.sql` : `protein_target_g_per_day`
+  toujours defini, strictement positif, jamais > 4g/kg de poids corporel
+  (marge large au-dela de toute recommandation serieuse, meme pour un
+  athlete de haut niveau).
+- Tests generiques (`_marts__models.yml`) : `fact_nutrition_target.user_id`
+  unique + not_null + relationship vers `dim_user` (grain = 1 ligne par
+  utilisateur, aucun utilisateur sans cible nutritionnelle).
+
 ---
 
 ## Resultats d'execution (chiffres reels, DAG `gold_dbt_run`)

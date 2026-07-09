@@ -24,6 +24,13 @@ x-airflow-common-env: &airflow-common-env
   # (qui sert l'API) exploite reellement ce reglage ; herite par
   # scheduler/init via cette ancre commune sans effet pour eux.
   AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+  # Jalon 3, sous-etape 1/6 : airflow/dags/nutrition_ingestion.py appelle
+  # l'API USDA FoodData Central -- cle transmise uniquement via variable
+  # d'environnement (jamais en dur dans le code du DAG), lue par le
+  # PythonOperator via os.environ (herite du process scheduler/LocalExecutor,
+  # donc de cette ancre commune). Jamais loggee, meme partiellement (voir
+  # nutrition_ingestion.py, fonction _redact()).
+  USDA_API_KEY: ${USDA_API_KEY}
 
 x-airflow-common-volumes: &airflow-common-volumes
   - ./airflow/dags:/opt/airflow/dags

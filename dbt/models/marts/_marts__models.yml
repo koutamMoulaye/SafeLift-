@@ -191,3 +191,45 @@ models:
           - not_null
           - accepted_values:
               values: [true]
+
+  - name: dim_nutrition
+    description: >
+      Catalogue d'aliments courants (USDA FoodData Central, Jalon 3
+      sous-etape 1/6). Macro-nutriments exprimes PAR 100G. Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 13.
+    columns:
+      - name: fdc_id
+        data_tests:
+          - unique
+          - not_null
+      - name: food_name
+        data_tests:
+          - not_null
+      - name: kcal_per_100g
+        data_tests:
+          - not_null
+
+  - name: fact_nutrition_target
+    description: >
+      Besoins nutritionnels cibles par utilisateur (BMR Mifflin-St Jeor,
+      TDEE, besoin proteique) -- formules DETERMINISTES et STANDARD, PAS
+      une recommandation medicale personnalisee. Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 13 pour le detail complet
+      et le rappel du cadre ethique du projet.
+    columns:
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              to: ref('dim_user')
+              field: user_id
+      - name: bmr_kcal
+        data_tests:
+          - not_null
+      - name: tdee_kcal
+        data_tests:
+          - not_null
+      - name: protein_target_g_per_day
+        data_tests:
+          - not_null

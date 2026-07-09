@@ -2,9 +2,10 @@
 
 > Ce fichier est la source de verite pour reprendre le projet dans une nouvelle
 > session, meme sans historique de conversation. A lire EN PREMIER, avec
-> [PROGRESS.md](./PROGRESS.md) (Jalon 1, etapes 1 a 6, clos) et
+> [PROGRESS.md](./PROGRESS.md) (Jalon 1, etapes 1 a 6, clos),
 > [PROGRESS_JALON2.md](./PROGRESS_JALON2.md) (Jalon 2, streaming affluence,
-> clos), avant de proposer quoi que ce soit.
+> clos) et [PROGRESS_JALON3.md](./PROGRESS_JALON3.md) (Jalon 3, nutrition +
+> ML bonus, en cours), avant de proposer quoi que ce soit.
 >
 > Regle : ce fichier doit toujours refleter l'etat REEL du repo. Le mettre a
 > jour AVANT de considerer une etape terminee.
@@ -26,9 +27,12 @@ AWS/Terraform -> gouvernance RGPD -> CI/CD) et est **clos depuis le
 (affluence par salle de sport, Kafka -> Spark Structured Streaming) et une
 boucle evenementielle utilisateur complete (Kafka -> Postgres -> trigger
 dbt) pour couvrir le Bloc 2 (pipelines temps reel) de la certification.
-Chaque etape/sous-etape doit etre livree de maniere 100%
-fonctionnelle (pas de pseudo-code, pas de TODO vague) avant de passer a la
-suivante.
+Le **Jalon 3** (voir [PROGRESS_JALON3.md](./PROGRESS_JALON3.md)), demarre
+le 2026-07-09, ajoute la **nutrition** (API USDA FoodData Central,
+`dim_nutrition`/`fact_nutrition_target`) et une couche **ML bonus**
+(sous-etapes suivantes). Chaque etape/sous-etape doit etre livree de
+maniere 100% fonctionnelle (pas de pseudo-code, pas de TODO vague) avant
+de passer a la suivante.
 
 ## Architecture cible (finale, toutes etapes confondues)
 
@@ -931,6 +935,58 @@ constats structurants :
   chemin/permissions au demarrage de `spark-streaming-gym`), tous
   documentes avec cause racine et correctif, aucun masque silencieusement.
 
+### Jalon 3, sous-etape 1/6 — Ingestion nutrition + calculs deterministes (2026-07-09)
+
+Voir `PROGRESS_JALON3.md` et `data/gold/GOLD_MODEL_DECISIONS.md`
+section 13 pour le detail complet. Resume des decisions structurantes :
+
+- **⚠️ Rappel du cadre ethique, a repeter a chaque usage de ces
+  donnees** : BMR/TDEE/besoin proteique sont des formules STANDARD
+  deterministes (litterature sportive generaliste), **PAS des
+  recommandations medicales/nutritionnelles personnalisees** — SafeLift ne
+  remplace ni coach ni medecin.
+- **Endpoint USDA `/foods/search` choisi plutot que `/food/{fdcId}`** :
+  une seule requete par mot-cle renvoie plusieurs aliments AVEC leurs
+  nutriments deja inclus, meilleur rapport simplicite/couverture que des
+  appels individuels par aliment. `dataType` restreint a
+  `Foundation,SR Legacy` (aliments de reference, valeurs par 100g
+  fiables) — exclut `Branded`/`Survey` (bruit, portions variables).
+- **DAG `nutrition_ingestion` self-contained**, independant de la cascade
+  Kaggle (`bronze_ingestion` -> `silver_transformation` -> `gold_dbt_run`)
+  — domaine different. Reutilise neanmoins `load_silver_to_postgres.py`
+  existant (table `usda_nutrition` ajoutee au dictionnaire `TABLES`) et
+  fait un `dbt run --select` SCOPE (pas tout `gold_dbt_run` —
+  `fact_nutrition_target` ne depend que de `dim_user` deja construite).
+- **BMR = Mifflin-St Jeor (1990)**, formule standard citee. **TDEE = BMR x
+  facteur d'activite**, deduit de `workout_frequency_days_per_week`
+  (mapping 2/3/4/5 jours -> 1.375/1.55/1.725/1.9, tables
+  Harris-Benedict/Mifflin usuelles). **Besoin proteique = 1.6 a 2.2 g/kg**
+  deduit de `experience_level` (1/2/3) — la fourchette elle-meme est
+  issue de la litterature sportive, mais CE mapping precis vers
+  `experience_level` est une simplification du projet, documentee comme
+  telle (limite assumee).
+- **Cle API (`USDA_API_KEY`) jamais en dur, jamais loggee meme
+  partiellement** (`_redact_secret()` applique systematiquement) — verifie
+  par une recherche exhaustive de la valeur exacte de la cle sur
+  l'ensemble des logs du run reel : 0 occurrence trouvee.
+- **⚠️ Bug reel + rappel operationnel important pour tout futur DAG** :
+  `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true` (deja actee) met tout
+  NOUVEAU DAG en pause a sa premiere apparition — **un DAG en pause ne
+  voit AUCUNE task planifiee par le scheduler, MEME pour un run declenche
+  manuellement** (hypothese initiale contraire infirmee en testant
+  reellement : le run reste `queued` indefiniment, aucune task ne demarre
+  jamais). Les 3 DAGs precedents avaient ete depauses manuellement lors de
+  sessions anterieures sans que cette etape soit documentee explicitement.
+  **`airflow dags unpause <dag_id>` est desormais une etape obligatoire
+  et documentee apres la creation de tout nouveau DAG dans ce projet.**
+- **Teste en conditions reelles** : ingestion API reelle (119 aliments,
+  25 ignores pour macro-nutriment manquant), 16/16 tests dbt PASS,
+  `gold.fact_nutrition_target` = 973 lignes (= nombre exact d'utilisateurs
+  `dim_user`), sanity check reel isolant l'effet de l'activite (poids
+  quasi-identique, frequence d'entrainement differente -> TDEE different
+  dans le sens attendu), verification arithmetique directe
+  (`tdee_kcal / bmr_kcal` == `activity_factor` exact sur l'echantillon).
+
 ## Conventions de nommage
 
 - Services Docker Compose et conteneurs : prefixe `safelift-` (ex:
@@ -1073,6 +1129,28 @@ Resume :
    (5/5 sous-etapes) cloture le 2026-07-09.** Voir PROGRESS_JALON2.md
    (resume de cloture en fin de fichier).
 
+## Etat d'avancement du Jalon 3 (nutrition + ML bonus)
+
+Voir [PROGRESS_JALON3.md](./PROGRESS_JALON3.md) pour le detail complet.
+Resume :
+
+1. ✅ fait (2026-07-09) — Ingestion nutrition + dimension + calculs
+   deterministes : `airflow/dags/nutrition_ingestion.py` (DAG
+   self-contained, 5 tasks, appel reel API USDA FoodData Central ->
+   Bronze -> Silver -> Postgres -> dbt scope restreint),
+   `gold.dim_nutrition` (119 aliments reels), `gold.fact_nutrition_target`
+   (973 utilisateurs, BMR Mifflin-St Jeor + TDEE + besoin proteique cible
+   — formules standard deterministes, PAS des recommandations medicales
+   personnalisees, voir GOLD_MODEL_DECISIONS.md section 13). Teste en
+   conditions reelles : 16/16 tests dbt PASS (scope nutrition), 93/93 en
+   comptant tout le projet (aucune regression Jalon 1/2), cle API jamais loggee
+   (verifie par recherche exhaustive dans les logs), sanity check reel
+   confirmant qu'a poids egal, plus de jours d'entrainement = TDEE plus
+   eleve. 1 bug reel corrige (DAG reste bloque en pause a sa premiere
+   apparition, `airflow dags unpause` necessaire — a refaire pour tout
+   futur nouveau DAG de ce projet, voir rappel operationnel plus bas).
+2-6. ⏳ a faire — non definies.
+
 ## Prochaines actions prevues
 
 > ⚠️ **TODO manuel Moulaye (1)** : verifier la licence Kaggle du dataset
@@ -1137,11 +1215,19 @@ Resume :
 
 ## Comment reprendre une session de travail
 
-1. Lire ce fichier (`CLAUDE.md`), `PROGRESS.md` (Jalon 1) et
-   `PROGRESS_JALON2.md` (Jalon 2) en entier.
+1. Lire ce fichier (`CLAUDE.md`), `PROGRESS.md` (Jalon 1),
+   `PROGRESS_JALON2.md` (Jalon 2) et `PROGRESS_JALON3.md` (Jalon 3) en
+   entier.
 2. Verifier l'etat reel du repo (`git log`, `git status`) pour confirmer que
    ces fichiers sont a jour par rapport au code.
 3. Si un ecart est constate entre la memoire (ce fichier) et le repo reel,
    faire confiance au repo et corriger ce fichier en consequence.
 4. Ne pas anticiper les etapes futures tant qu'elles n'ont pas ete
    explicitement demandees.
+5. **Apres avoir cree un NOUVEAU DAG Airflow** : penser a le depauser
+   explicitement (`airflow dags unpause <dag_id>`, via
+   `docker compose exec airflow-webserver ...`) — `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true`
+   met tout nouveau DAG en pause par defaut, et un DAG en pause ne voit
+   AUCUNE task planifiee par le scheduler meme pour un run declenche
+   manuellement (le run reste `queued` indefiniment). Voir
+   PROGRESS_JALON3.md sous-etape 1/6 pour le detail du bug reel rencontre.

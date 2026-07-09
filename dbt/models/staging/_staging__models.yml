@@ -61,3 +61,19 @@ models:
           - not_null
           - accepted_values:
               values: ["weight_training", "realtime_user_input"]
+
+  - name: stg_usda_nutrition
+    description: >
+      Aliments USDA FoodData Central (Jalon 3, sous-etape 1/6). Voir
+      data/gold/GOLD_MODEL_DECISIONS.md section 13.
+    columns:
+      - name: fdc_id
+        data_tests:
+          - unique
+          - not_null
+      - name: food_name
+        data_tests:
+          - not_null
+      - name: kcal_per_100g
+        data_tests:
+          - not_null

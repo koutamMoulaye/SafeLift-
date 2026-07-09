@@ -43,3 +43,10 @@ sources:
           grain "1 ligne par set"). Table creee et alimentee par le
           consumer, PAS par un job Spark -- voir
           data/gold/GOLD_MODEL_DECISIONS.md section 11.
+      - name: silver_usda_nutrition
+        description: >
+          Aliments courants (fitness/nutrition) recuperes via l'API USDA
+          FoodData Central (endpoint /foods/search, dataType Foundation/SR
+          Legacy) -- airflow/dags/nutrition_ingestion.py, Jalon 3 sous-etape
+          1/6. Grain = 1 ligne par aliment distinct (fdc_id). Voir
+          data/gold/GOLD_MODEL_DECISIONS.md section 13.
