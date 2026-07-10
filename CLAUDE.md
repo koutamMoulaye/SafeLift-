@@ -9,6 +9,11 @@
 >
 > Regle : ce fichier doit toujours refleter l'etat REEL du repo. Le mettre a
 > jour AVANT de considerer une etape terminee.
+>
+> ⚠️ **Soumission le 2026-07-13. Migration en cours vers `dashboard-v2/`
+> (React) — voir la section dediee juste apres celle-ci, point de
+> controle FERME le soir du 2026-07-11.** Le dashboard existant
+> (`dashboard/`) reste le filet de securite et doit rester intact.
 
 ## Contexte global
 
@@ -33,6 +38,638 @@ le 2026-07-09, ajoute la **nutrition** (API USDA FoodData Central,
 (sous-etapes suivantes). Chaque etape/sous-etape doit etre livree de
 maniere 100% fonctionnelle (pas de pseudo-code, pas de TODO vague) avant
 de passer a la suivante.
+
+## ⚠️ Migration dashboard-v2 (React) — EN COURS, point de controle 2026-07-11
+
+> **Soumission le 2026-07-13.** Delai serre (3 jours au moment du
+> demarrage de cette migration, 2026-07-10). **Point de controle FERME
+> avec Moulaye le soir du 2026-07-11** : si l'avancement n'est pas
+> clairement sur la bonne voie a ce moment-la, retour au dashboard actuel
+> (`dashboard/`) pour la soutenance — cette section existe precisement
+> pour que ce bilan soit possible sans deviner l'etat reel du travail.
+
+**Regle absolue, valable pour toute la duree de cette migration** : le
+dashboard existant (`dashboard/`, vanilla JS/CSS servi par FastAPI sur
+`DASHBOARD_PORT_EXPOSED=18000`) reste **intact et fonctionnel a tout
+moment** — c'est le filet de securite si `dashboard-v2` n'est pas pret le
+2026-07-11. Ne jamais le modifier au-dela de la seule exception CORS
+documentee ci-dessous.
+
+**Decision d'architecture** : nouveau projet `dashboard-v2/` (React 19 +
+Vite 8 + Tailwind CSS v4 + Framer Motion), construit EN PARALLELE sur un
+port distinct (Vite, `5173`), consommant **exactement les memes endpoints
+FastAPI existants** (`dashboard/main.py`) — aucun nouvel endpoint, aucune
+duplication de logique metier cote backend. Silhouette en SVG stylise
+(pas de React Three Fiber / vraie scene 3D — juge hors de portee
+raisonnable pour ce delai, et l'effet holographique vise s'obtient bien
+en SVG+CSS/Framer Motion).
+
+### Seule modification backend tolerée : CORS
+
+`dashboard/main.py` a recu un `CORSMiddleware` (`fastapi.middleware.cors`)
+autorisant explicitement `http://localhost:5173` et `http://127.0.0.1:5173`
+(origines du serveur de dev Vite) — **aucun autre changement backend**.
+Choix `allow_origins` explicite (pas `["*"]`) pour rester le plus
+restrictif possible. Image `dashboard` reconstruite et redemarree pour
+cette modification (bind mount non utilise pour ce service, voir
+docker-compose.yml). **Verifie reellement** : preflight `OPTIONS` et `GET`
+reel depuis l'origine `5173` renvoient bien les en-tetes
+`access-control-allow-origin`, une requete avec une origine non listee
+(`http://evil.example.com`) n'en recoit AUCUN — confirme par `curl` avec
+en-tete `Origin` explicite dans les deux cas. Dashboard existant
+re-teste healthy et fonctionnel apres ce rebuild (`/health`,
+`/users/9/risk`, `/static/dashboard.js`/`.css` tous confirmes `200`).
+
+### Sous-étape 1/N — Scaffolding — ✅ fait (2026-07-10)
+
+**Perimetre EXPLICITEMENT borne a cette sous-etape** : structure du
+projet + theme visuel + UNE SEULE silhouette centrale branchee sur de
+vraies donnees. Tout le reste (widgets des colonnes, barre superieure
+fonctionnelle, zone de tendances, selecteur d'utilisateur) est un
+SQUELETTE VISUEL SEULEMENT — non fonctionnel, texte "à venir" affiche
+explicitement plutot que des donnees inventees ou une fausse
+implementation.
+
+**Livre** :
+- `dashboard-v2/` : projet Vite scaffolde (`npm create vite@latest -- --template react`),
+  Tailwind v4 installe via `@tailwindcss/vite` (config CSS-first, `@theme`
+  dans `src/index.css` — pas de `tailwind.config.js` separe, approche
+  recommandee par Tailwind v4), Framer Motion installe.
+- **Palette** (`src/index.css`, `@theme`) : fond `--color-deep: #070b12`,
+  panneaux `--color-panel`/`--color-panel-alt`, accents
+  `--color-cyan: #00e5ff` / `--color-blue: #3b82f6` / `--color-violet: #8b5cf6`
+  — conformes a la demande. **Code couleur de risque
+  (`--color-risk-faible/modere/eleve/none`) copie A L'IDENTIQUE de
+  l'ancien dashboard** (`dashboard/static/dashboard.css`,
+  `COLOR_BY_LEVEL`) pour ne jamais introduire de divergence de sens entre
+  les deux dashboards pendant la migration — memes valeurs hexadecimales
+  exactes.
+- **`src/components/Silhouette.jsx`** : geometrie SVG (viewBox 240x480)
+  **PORTEE A L'IDENTIQUE** depuis `dashboard/static/index.html` (memes
+  coordonnees exactes pour les 18 zones + contour + details decoratifs),
+  reecrite en tableau de donnees JSX (`ZONES`) plutot que redessinee —
+  consigne explicite de reutiliser/adapter, pas de repartir de zero.
+  **Seul widget fonctionnel de bout en bout** : `useUserRisk` (hook,
+  `src/hooks/useUserRisk.js`) appelle reellement `GET
+  /users/{user_id}/risk` via `src/api/client.js`
+  (`VITE_API_BASE_URL`, `.env`/`.env.example`), les zones se colorent
+  selon `risk_level` retourne par l'API (meme `COLOR_BY_LEVEL` que
+  l'ancien dashboard). Lueur holographique (`filter:drop-shadow`)
+  UNIQUEMENT sur les zones avec une vraie donnee (meme regle deja
+  etablie sur l'ancien dashboard — jamais de halo sur le gris "pas de
+  donnee"). Animation de "respiration" (scale/opacity tres subtils en
+  boucle infinie, Framer Motion `animate`/`transition`) sur tout le SVG.
+- **`user_id=9` CODE EN DUR** dans `Silhouette.jsx`
+  (`HARDCODED_USER_ID`) — AUCUN selecteur d'utilisateur a ce stade
+  (limite assumee et documentee, pas un oubli). `user_id=9` choisi car
+  c'est **le seul utilisateur du dataset avec un historique reel
+  exploitable** (meme constat deja documente pour l'ancien dashboard,
+  `data/gold/GOLD_MODEL_DECISIONS.md` section 5).
+- **Layout** (`src/App.jsx`) : grille 3 colonnes (`SidePlaceholder`
+  gauche/droite VIDES + silhouette centrale), `TopBar` (score
+  global/date/statut -- SQUELETTE, texte "à venir" explicite pour le
+  score), `BottomTrends` (zone basse, SQUELETTE). Tout le squelette
+  utilise des bordures en pointilles + texte muted "à venir" pour ne
+  jamais laisser croire qu'un widget est fonctionnel alors qu'il ne
+  l'est pas.
+
+**Verifications effectuees (toutes reelles, aucun dry-run)** :
+1. **`npm run build` reussit sans erreur** (424 modules transformes,
+   bundle CSS 14.6ko/JS 319ko gzippes) — verification de compilation
+   plus forte qu'un simple "le serveur de dev ne plante pas".
+2. **Classes Tailwind personnalisees confirmees generees** : recherche
+   directe dans le CSS buildé (`.bg-deep`, `.text-cyan`, `.bg-panel`,
+   `.border-line`, `.bg-cyan` tous presents) — confirme que les tokens
+   `@theme` sont bien reconnus, pas juste ecrits sans effet.
+3. **`npm run dev` reellement lance et interroge** : `curl` sur
+   `http://localhost:5173/` confirme le HTML servi (title correct,
+   `#root` present, `/src/main.jsx` charge), `curl` sur
+   `/src/components/Silhouette.jsx` confirme le contenu transforme par
+   Vite (HMR actif).
+4. **CORS verifie reellement dans les 2 sens** (voir section CORS
+   ci-dessus) : origine autorisee -> en-tetes presents ; origine non
+   autorisee -> aucun en-tete CORS.
+5. **Dashboard existant confirme intact et fonctionnel EN PARALLELE** :
+   les deux serveurs (`18000` ancien dashboard, `5173` dashboard-v2)
+   repondent simultanement `200`, aucun conflit de port, 12 services
+   Docker toujours `healthy` apres le rebuild du conteneur `dashboard`
+   (necessaire uniquement pour la modification CORS).
+6. **Verification VISUELLE reelle (capture d'ecran du rendu, silhouette
+   effectivement coloree/animee a l'ecran) NON effectuee** — extension
+   Chrome indisponible, meme limite deja documentee sur absolument
+   toutes les sessions precedentes du projet. Verification structurelle
+   uniquement (compilation, classes generees, requetes HTTP reelles) —
+   **le rendu visuel effectif reste a confirmer par Moulaye sur
+   `http://localhost:5173` avant le point de controle du 2026-07-11**.
+
+**Ce qui restait A FAIRE a l'issue de la sous-etape 1/N (scaffolding),
+TOUT RESOLU depuis — voir la sous-etape 2/N plus bas pour le detail
+exact** :
+- ~~Selecteur d'utilisateur (actuellement `user_id=9` code en dur).~~
+  **FAIT** (2026-07-10) — la silhouette elle-meme est restee
+  intentionnellement figee sur `user_id=9` jusqu'au 2026-07-11
+  (voir sous-etape 2/N), **corrige depuis** : voir "Correctif — Silhouette
+  figee sur user_id=9 (2026-07-11)" plus bas dans ce fichier.
+- ~~Barre superieure fonctionnelle (score global reel, statut reel).~~
+  **FAIT**.
+- ~~Widgets des colonnes laterales (zones sensibles, formulaire "Logger
+  une séance", nutrition, tendance ML).~~ **FAIT**, y compris le
+  simulateur what-if (explicitement hors perimetre de la sous-etape 2/N,
+  **porte depuis a la sous-etape 5/N**, voir plus bas).
+- ~~Zone de tendances (graphique d'historique).~~ **FAIT**.
+- ~~Affluence temps reel (SSE).~~ **FAIT**.
+- ~~Toggle mode demo.~~ **FAIT**.
+- ~~Aucune verification visuelle reelle effectuee~~ **RESOLU** (voir
+  correctif silhouette ci-dessous : verification visuelle reelle
+  desormais possible via `dashboard-v2/screenshot.cjs`).
+
+**Honnetement, au 2026-07-10** : le scaffolding et LA silhouette
+fonctionnent (verifie structurellement puis visuellement, voir
+ci-dessous), mais c'est UN SEUL widget sur environ 8-10 attendus pour un
+dashboard complet equivalent a l'existant. Le rythme necessaire pour
+rattraper d'ici le 2026-07-13 (soumission) est eleve — c'est exactement
+le jugement que le point de controle du 2026-07-11 doit trancher, sans
+enjoliver l'etat actuel.
+
+### Correctif silhouette : wireframe (traits) au lieu de formes pleines — ✅ fait (2026-07-10, meme jour)
+
+**Constat de l'utilisateur (jugement direct sur la sous-etape 1)** : la
+premiere version de la silhouette utilisait des formes PLEINES (`fill`)
++ `filter:blur`, donnant un effet "bonhomme plein floute" — PAS
+l'hologramme recherche. Un vrai wireframe holographique repose sur des
+LIGNES FINES (`fill:none` + `stroke`), qui laissent voir le fond a
+travers.
+
+**Corrige, rapidement et de facon ciblee** (`dashboard-v2/src/components/Silhouette.jsx`) :
+- **Toutes les zones et l'armature structurelle passent en `fill="none"`
+  + `stroke`** (1.2-2px selon le type de trait) — plus AUCUNE surface
+  remplie dans tout le SVG.
+- **Lueur appliquee au TRAIT lui-meme** (deux couches de
+  `filter:drop-shadow` superposees sur le `stroke`, pas une seule masse
+  floue) — la ligne elle-meme semble neon, effet "cloud flou" evite.
+- **Hierarchie visuelle introduite** : armature structurelle (tete, cou,
+  contour du corps, ligne mediane du torse, clavicules) en gris-bleu
+  neutre (`STRUCTURE_STROKE`) SANS forte lueur — sert de "cadre"
+  technique discret ; SEULES les zones a donnees reelles (colorees par
+  `risk_level`) recoivent la lueur neon prononcee. Evite un rendu ou tout
+  brille uniformement (peu lisible).
+- **Ligne mediane du torse ajoutee** (tiret vertical schematisant la
+  colonne/le sternum) — suggestion explicite de la tache.
+- **8 points d'articulation "motion capture"** ajoutes (epaules, coudes,
+  hanches, genoux — coordonnees deduites de la geometrie existante),
+  petits points cyan avec lueur, PUREMENT decoratifs (non branches aux
+  donnees) — bonus optionnel de la tache, integre car peu couteux et
+  renforce nettement l'effet "wireframe technique".
+- **Geometrie des zones INCHANGEE** (memes coordonnees exactes que la
+  version precedente) — donc **le branchement aux donnees reelles
+  (`useUserRisk` -> `risk_level` -> couleur) n'a pas ete touche**, seul le
+  rendu (attributs `fill`/`stroke` par zone) a change.
+
+**Decouverte utile pendant la verification, a reutiliser pour les
+prochaines sous-etapes** : l'extension Chrome (`claude-in-chrome`) reste
+indisponible sur cette machine (constat repete depuis des dizaines de
+sessions), mais **une verification visuelle reelle est desormais
+possible sans elle** — `dashboard-v2/screenshot.cjs` (nouveau, utilise
+`playwright-core`, devDependency ajoutee) pilote directement le Chrome
+DEJA INSTALLE sur la machine (`executablePath` explicite vers
+`C:\Program Files\Google\Chrome\Application\chrome.exe`, PAS de
+telechargement d'un Chromium separe -- rapide, adapte au delai serre).
+Usage : `npm run dev` doit tourner, puis `node screenshot.cjs` depuis
+`dashboard-v2/` -> `silhouette-wireframe.png` (ignore par git, artefact
+ponctuel). **Capture reelle prise et inspectee** : confirme un vrai
+wireframe (lignes fines lumineuses, fond visible a travers le corps),
+zones colorees coherentes avec les vraies donnees de `user_id=9` (dos et
+epaules en ambre/Modere, bras et jambes en vert/Faible, mollets en gris
+neutre car `calves` n'a jamais de donnee reelle — comportement attendu,
+deja documente).
+
+**A reutiliser explicitement pour toutes les prochaines sous-etapes de
+dashboard-v2** (plutot que de re-signaler "verification visuelle non
+effectuee" a chaque fois) : lancer `node dashboard-v2/screenshot.cjs`
+apres tout changement visuel, avant de le documenter comme verifie.
+
+### Sous-étape 2/N — Tous les widgets branchés sur données réelles — ✅ fait (2026-07-10, même jour)
+
+**Perimetre** : brancher TOUT le reste de dashboard-v2 (jusque-la des
+placeholders texte "à venir") sur les endpoints FastAPI EXISTANTS
+(`dashboard/main.py`, aucun nouvel endpoint cree) — sans toucher a
+`dashboard-v2/src/components/Silhouette.jsx` (contrainte explicite,
+respectee : fichier non modifie dans cette passe, verifie par `git diff`
+avant commit).
+
+**Widgets livres, tous reellement branches (pas de placeholder
+restant)** :
+- **Sélecteur d'utilisateur + toggle démo** (`TopBar.jsx`) — dropdown
+  groupe `users_with_data`/`users_without_data` (`GET /users`, meme
+  distinction deja etablie sur l'ancien dashboard), pre-selectionne
+  toujours un profil avec donnees. Toggle demo fait basculer un
+  deuxieme `<select>` (les 9 scenarios, `GET /demo/scenarios`, charges
+  paresseusement a la premiere activation).
+- **Score global** (`TopBar.jsx`) — MAX des `risk_score` par zone (pas
+  une moyenne, meme regle que l'ancien dashboard), calcule par
+  `computeGlobalScore()` (`src/lib/riskHelpers.js`).
+- **Zones sensibles** (`SensitiveZones.jsx`) — liste des zones
+  Modere/Eleve avec facteur dominant en langage clair
+  (`getDominantFactors()`, porte depuis `dashboard.js`).
+- **Logger une séance** (`LogSessionForm.jsx`) — `POST
+  /users/{id}/sessions` (Kafka, jamais d'ecriture DB directe) + polling
+  toutes les 3s jusqu'a 180s (memes constantes que l'ancien dashboard,
+  timeout calibre sur les mesures reelles 70s/109s/110s deja
+  documentees). **Teste reellement de bout en bout** (pas juste le
+  code lu) : soumission reelle sur `user_id=9` ("Bench Press (Barbell)",
+  77kg x 3 x 10) -> statut passe a succes en **109.1s**, score Pectoraux
+  11.00 -> 0.00 (Faible) — delai coherent avec la fourchette "1 à 2 min"
+  deja etablie.
+- **Tendance** (`BottomTrends.jsx`, fichier reutilise/reecrit) — KPI
+  delta (2e moitie vs 1re moitie de l'historique, `computeTrend()`) +
+  courbe SVG simple portee depuis `drawHistoryChart()`. "Non applicable
+  en mode démo", comme l'ancien dashboard.
+- **Affluence en direct** (`OccupancyPanel.jsx`, nouveau) — Server-Sent
+  Events (`GET /gyms/occupancy/stream`, `EventSource` natif, connexion
+  ouverte une seule fois au montage, fermee au demontage) + `GET
+  /gyms/{id}/best_slot` au clic sur une salle. Reste actif quel que soit
+  le mode reel/demo (l'affluence n'a pas d'`user_id`, meme raisonnement
+  que l'ancien dashboard).
+- **Nutrition** (`NutritionPanel.jsx`, nouveau) — `GET
+  /users/{id}/nutrition`, avertissement ethique affiche EN PREMIER,
+  jamais masque (texte = `data.disclaimer`, source unique de verite
+  cote API, jamais reformule). BMR/TDEE en "gros chiffre + label
+  discret" (`HeroStat.jsx`, nouveau composant partage), jauge proteique,
+  8 aliments suggeres (troncature + `title`).
+- **Tendance prédictive ML** (`MlPredictionPanel.jsx`, nouveau) — `GET
+  /users/{id}/risk/prediction`, bordure pointillee violette + badge
+  "EXPÉRIMENTAL" (jamais fusionne visuellement avec le risk_score
+  deterministe, meme regle deja actee), gere explicitement les 2 cas
+  "non disponible" (table absente vs utilisateur sans historique) sans
+  jamais planter.
+
+**Etat partage centralise** (`src/context/DashboardContext.jsx`,
+nouveau) : justifie ici (alors que le reste du projet privilegie "chaque
+widget fetch le sien") par le nombre de widgets ayant TOUS besoin de la
+meme reponse `GET /users/{id}/risk` (TopBar, Zones sensibles, Tendance)
+— evite 3 fetchs identiques a chaque changement d'utilisateur. Expose
+`refreshAfterSessionUpdate()`, appele par `LogSessionForm` apres
+detection d'un score change, qui force `useUserRisk`/l'historique a se
+re-fetcher (equivalent du `onUserChange()` complet de l'ancien
+dashboard). `useUserRisk.js` (hook, PAS Silhouette.jsx) etendu avec 2
+changements non-cassants : guard sur `userId` null/undefined (mode
+demo, skip le fetch) et un second parametre optionnel `reloadKey` —
+Silhouette.jsx continue de l'appeler exactement comme avant
+(`useUserRisk(HARDCODED_USER_ID)`), non affectee à cette sous-étape —
+**corrigé depuis, voir "Correctif — Silhouette figee sur user_id=9
+(2026-07-11)" plus bas.**
+
+**Limite assumee et documentee (contrainte explicite de cette passe,
+pas un oubli)** : la silhouette centrale reste branchee sur
+`user_id=9` en dur (`Silhouette.jsx` non modifie) — changer le
+selecteur d'utilisateur met a jour TOUS les autres widgets mais PAS la
+silhouette elle-meme. Sans consequence pratique pour la demo actuelle
+(seul `user_id=9` a des donnees de risque reelles exploitables, memes
+raisons deja documentees section "Decisions techniques" /
+`GOLD_MODEL_DECISIONS.md` section 5) — **corrige le 2026-07-11, voir
+"Correctif — Silhouette figee sur user_id=9 (2026-07-11)" plus bas.**
+
+**Hors perimetre de cette passe, PAS regresse (juste jamais demande
+pour dashboard-v2)** : simulateur what-if (`POST /api/simulate-risk`) —
+l'enonce de cette tache listait explicitement 7 widgets, le simulateur
+n'y figurait pas ; reste disponible sur l'ancien dashboard (`dashboard/`,
+port 18000), a ajouter a dashboard-v2 dans une prochaine passe si
+demande.
+
+**Verifications reelles effectuees (toutes, pas de dry-run)** :
+1. `npm run build` reussit (431 modules, aucune erreur), `npm run lint`
+   (oxlint) : 0 erreur (1 avertissement fast-refresh benin sur
+   `DashboardContext.jsx`, pattern standard React Context+hook).
+2. **Captures d'ensemble reelles** (`dashboard-v2/screenshot_full.cjs`,
+   nouveau, meme technique Chrome local que `screenshot.cjs`) : mode
+   reel (`user_id=9`) ET mode demo, pleine page — confirme visuellement
+   que chaque widget affiche une vraie donnee (aucun texte "à venir"
+   restant) et que le toggle demo desactive correctement
+   Nutrition/Logger séance/Tendance ML avec un message explicite
+   (jamais un encart vide sans explication).
+3. **Profil sans donnee reelle teste** (`user_id=1`) : score global
+   "— (aucune donnée)", zones sensibles/tendance/ML affichent des
+   messages honnetes ("aucune zone", "historique insuffisant", "pas
+   assez d'historique"), Nutrition et Affluence continuent de fonctionner
+   (disponibles pour tout utilisateur reel / independantes de
+   l'utilisateur) — comportement attendu, verifie par capture.
+4. **Formulaire "Logger une séance" teste de bout en bout en conditions
+   reelles** (pas seulement le code) : voir ci-dessus, 109.1s, score
+   Pectoraux 11.00->0.00, ET confirmation que `refreshAfterSessionUpdate()`
+   a bien rafraichi le contexte (Tendance passee de +1.2 a +1.1 pts entre
+   les deux captures, Affluence continue de tourner independamment).
+5. **Aucun appel API en echec** (verifie via les evenements
+   `response`/`console` de Playwright sur toute la session : 0 requete
+   >=400 hors favicon.ico, 0 erreur console hors l'avertissement React
+   `key`-spread deja connu et localise dans `Silhouette.jsx`, fichier non
+   retouche).
+6. **Aucun debordement horizontal** a 1366x768 ni 1920x1080
+   (`document.documentElement.scrollWidth === clientWidth` verifie aux
+   deux resolutions) ; troncature + `title` deja appliques sur tous les
+   `<select>` et textes potentiellement longs (exercices, aliments,
+   noms de salle, zones).
+7. **Ancien dashboard confirme intact et fonctionnel en parallele** :
+   `/health`, `/`, `/static/dashboard.js`, `/static/dashboard.css`,
+   `/users/9/risk` tous `200` pendant toute la session de
+   verification — aucun fichier de `dashboard/` modifie dans cette
+   passe (seul le diff CORS deja existant avant cette tache).
+
+**Nouveaux fichiers** : `src/context/DashboardContext.jsx`,
+`src/lib/riskHelpers.js`, `src/components/{SensitiveZones,
+LogSessionForm, OccupancyPanel, NutritionPanel, MlPredictionPanel,
+HeroStat}.jsx`, `dashboard-v2/screenshot_full.cjs`. **Fichiers
+reecrits** : `App.jsx`, `TopBar.jsx`, `BottomTrends.jsx`,
+`api/client.js` (endpoints ajoutes), `hooks/useUserRisk.js` (guard +
+reloadKey, non-cassant). **Supprime** : `SidePlaceholder.jsx` (plus
+utilise, remplace par les vrais widgets).
+
+### Sous-étape 3/N — Sélecteur d'utilisateur allégé (recherche par ID) — ✅ fait (2026-07-10, même jour)
+
+**Constat** : le `<select>` enumerait individuellement les 972 profils
+`dim_user` sans donnee de seance reelle rattachee ("Utilisateur 1 — pas
+de séance loggée", ..., "Utilisateur 973 — ...") -- illisible, penible a
+parcourir, alors qu'un seul (`user_id=9`) a des donnees exploitables
+(voir `GOLD_MODEL_DECISIONS.md` section 5, deja documente a plusieurs
+endroits de ce fichier).
+
+**Corrige** (`TopBar.jsx` uniquement, aucun autre fichier touche) :
+- Le groupe "Profils avec données de séance réelles" reste enumere
+  individuellement (cas d'usage principal, actuellement 1 seul profil
+  mais le code reste generique si ce nombre augmente).
+- Le groupe "sans donnee" n'est plus enumere : remplace par un unique
+  bouton resume `+972 profils sans séance réelle (démonstration) —
+  rechercher un ID`, qui deplie un champ de recherche.
+- **Recherche par ID = `<input list>` + `<datalist>` HTML natif**, PAS un
+  composant de filtrage custom (choix delibere, "rester simple") : le
+  navigateur filtre lui-meme les suggestions au fur et a mesure de la
+  frappe. La liste `<datalist>` couvre TOUS les utilisateurs (973
+  options, label "(données réelles)" ou "— pas de séance") -- cout
+  DOM negligeable, rendu uniquement quand la recherche est depliee (pas
+  au chargement initial). Selection validee sur `Enter` ou `blur` (pas a
+  chaque frappe, pour eviter un flicker de selections intermediaires
+  pendant la saisie d'un nombre a plusieurs chiffres) ; un ID invalide
+  affiche "ID inconnu" sans planter.
+- **Coherence du `<select>` principal preservee** : si le profil
+  selectionne vient de la recherche (hors du groupe "avec donnees"), une
+  option temporaire portant son id est injectee dynamiquement dans le
+  `<select>` (`Utilisateur {id} — pas de séance (recherché)`) pour que
+  le champ affiche correctement la selection en cours plutot qu'un etat
+  incoherent/vide -- disparait d'elle-meme des qu'on reselectionne un
+  profil "avec donnees" depuis le menu normal.
+- **Texte dynamique ajoute sous le selecteur**, calcule reellement
+  depuis les donnees (aucun chiffre code en dur) : nombre total de
+  profils (`usersWithData.length + usersWithoutData.length`), nombre
+  avec donnees reelles, et le score global du profil actuellement
+  selectionne si disponible (reutilise `computeGlobalScore()`, deja
+  utilise pour le "Score global" affiche a droite du header) — sinon
+  "aucune donnée de risque" une fois le chargement termine.
+
+**Verifications reelles effectuees** (`npm run build`/`lint` propres,
+captures via Chrome local comme le reste du projet) :
+1. **Avant/apres captures du `<select>` OUVERT** : Chromium headless
+   peut capturer le popup interne d'un `<select>` natif (verifie
+   directement) — la capture "avant" montre bien les 972 lignes
+   individuelles scrollables, la capture "apres" montre le groupe "avec
+   données" (1 ligne) + le bouton resume, sans plus aucune ligne
+   individuelle pour les profils sans donnee.
+2. **Recherche testee de bout en bout** : ouverture du champ, saisie de
+   l'ID `42` (profil sans donnee), validation par `Enter` -> `<select>`
+   principal reflete bien `Utilisateur 42` (valeur confirmee
+   programmatiquement), texte dynamique passe a "aucune donnée de
+   risque", panneau ML confirme bien "Non disponible pour ce profil —
+   Pas assez d'historique réel..." (comportement deja en place, non
+   regresse).
+3. **Selection normale (menu deroulant, pas la recherche) reconfirmee
+   fonctionnelle** apres le changement : retour a `user_id=9` via le
+   `<select>` -> valeur bien reprise en compte.
+4. **Toggle mode démo reconfirme fonctionnel** (bascule vers le
+   selecteur de scenarios, inchange par cette passe).
+5. **Aucun debordement horizontal** introduit par le header agrandi (3
+   lignes desormais en mode reel : select+recherche, champ de recherche
+   optionnel, texte resume) — verifie a 1440px, capture pleine page
+   confirmant l'absence de chevauchement avec le contenu en dessous
+   (header `sticky`, hauteur dynamique geree nativement par le flow,
+   pas de hauteur fixe codee en dur qui aurait pu se desynchroniser).
+
+### Sous-étape 4/N — Correctif toggle démo (régression) + graphique Tendance lisible — ✅ fait (2026-07-11)
+
+**⚠️ Bug reel trouve et corrige, PAS un bug de la sous-etape 3/N ci-dessus
+(regression introduite APRES, entre la fin de la sous-etape 3/N et le
+debut de cette session)** : le toggle "Mode démo" faisait disparaitre
+TOUT le dashboard (page blanche). Cause reelle (confirmee avec
+Playwright, `pageerror` capture) : `src/context/DashboardContext.jsx`
+n'exportait plus `useDashboard` (seulement le composant
+`DashboardProvider`), alors que 6 composants
+(TopBar/BottomTrends/LogSessionForm/MlPredictionPanel/NutritionPanel/SensitiveZones)
+l'importaient depuis ce fichier — un commentaire dans le code pretendait
+qu'un refactor anterieur avait deja deplace ce hook dans
+`src/hooks/useDashboard.js`, mais ce fichier n'existait pas :
+la refonte n'avait jamais ete terminee. Consequence : une erreur JS
+module non rattrapee ("does not provide an export named 'useDashboard'")
+empechait React de monter l'arbre des le chargement — **pas seulement au
+clic sur le toggle demo**, qui semblait juste en etre la cause parce que
+c'etait la premiere interaction testee sur cet etat deja casse.
+
+**Corrige** en creant reellement `src/hooks/useDashboard.js`, et en isolant
+l'objet `DashboardContext` brut dans son propre fichier
+(`src/context/dashboardContextObject.js`, ni composant ni hook) : ni
+`DashboardContext.jsx` (le Provider) ni `useDashboard.js` (le hook)
+n'exportent plus qu'un seul type de chose chacun — elimine aussi
+l'avertissement oxlint `only-export-components` (Fast Refresh Vite) que
+la refonte initiale, avortee, cherchait deja a eviter. **0 avertissement
+lint apres correctif** (`useContext` inutilise egalement retire de
+`DashboardContext.jsx`).
+
+**Graphique "Tendance" remplace** (`BottomTrends.jsx`) : l'ancien rendu
+SVG fait main (polyline + un cercle colore par point, porte tel quel
+depuis `drawHistoryChart()` de l'ancien dashboard) compressait les **573
+points reels** de l'historique de `user_id=9` dans 400px de large — effet
+visuel confirme en pratique comme une "pelouse" (pics colores denses),
+pas un graphique de tendance lisible. Remplace par un `AreaChart`
+`recharts` (nouvelle dependance dashboard-v2, choix documente dans le
+code : deja dans l'ecosysteme React, gere nativement le redimensionnement
+responsive/le tooltip/l'espacement des ticks, pas de justification a
+reecrire cette logique a la main pour ce composant qui n'a pas
+d'equivalent partage avec l'ancien dashboard vanilla JS) : ligne continue
+lissee SANS marqueur par point, degrade cyan->bleu, axe X en VRAIES dates
+(6 ticks calcules explicitement, ex. "juil. 2016" — pas les 573 labels
+un par un), axe Y 0-100 fixe, grille discrete, 2 lignes de repere
+pointillees aux seuils Faible/Modere/Eleve (33/66) deja utilises partout
+ailleurs dans le dashboard, tooltip au survol (date complete + score +
+nombre de seances ce jour-la). Le KPI "+X pts, 2e moitie vs 1re moitie"
+au-dessus est inchange.
+
+**Verifications reelles effectuees** :
+1. **Bug reproduit avant correctif** (Playwright, `pageerror` capture +
+   capture d'ecran page blanche) puis **corrige et reverifie sur 5+
+   bascules successives** (y compris un toggle avant la fin du
+   chargement de `/users`, cas de course potentiel) : aucune erreur,
+   mode demo affiche bien le bandeau + selecteur de scenario + tout le
+   reste de l'UI (zones sensibles du scenario, affluence toujours
+   active, widgets utilisateur-only desactives avec message explicite) —
+   jamais un ecran vide.
+2. **`npm run build`/`lint` propres** (0 avertissement) apres le
+   correctif de separation Context/Provider/hook.
+3. **Graphique verifie visuellement** (`node screenshot`-style local,
+   meme technique Chrome que le reste du projet) : axe Y confirme
+   complet (0/25/50/75/100 en inspectant le SVG genere), axe X avec
+   vraies dates (`juil. 2016`, `févr. 2017`, `nov. 2017`, `avr. 2018`,
+   `juil. 2026`), plus aucun effet "pelouse".
+4. **Aucune ligne ajoutee en base, aucune requete en echec** (>=400 hors
+   favicon) pendant toute la session de verification.
+
+**Fichiers** : `src/context/dashboardContextObject.js` (nouveau),
+`src/hooks/useDashboard.js` (nouveau, corrige le bug), `src/context/DashboardContext.jsx`
+(modifie), `src/components/BottomTrends.jsx` (reecrit, recharts),
+6 imports corriges (`../hooks/useDashboard` au lieu de
+`../context/DashboardContext`), `package.json` (+recharts).
+
+### Sous-étape 5/N — Simulateur what-if porté sur dashboard-v2 — ✅ fait (2026-07-11, même jour)
+
+**Ce qui existait deja, verifie AVANT tout developpement** (consigne
+explicite de ne pas recreer ce qui existe) : le simulateur what-if
+(Feature A, 2026-07-06, voir plus haut dans ce fichier) est un backend
+DEJA COMPLET sur l'ancien dashboard — `POST /api/simulate-risk`
+(`dashboard/main.py`), `GET /users/{user_id}/exercises`, et
+`dashboard/risk_formula.py` (formule dupliquee explicitement depuis
+`fact_risk_score.sql`, calcul pur, **aucune ecriture en base, aucune
+publication Kafka** — confirme par lecture du code, l'endpoint ne fait
+que des `SELECT`). **Reutilise TEL QUEL, aucun nouvel endpoint cree.**
+
+**Coherence formule Python vs dbt RE-VERIFIEE pour cette livraison**
+(pas seulement relue dans la doc existante) : script ponctuel execute
+dans le conteneur `safelift-dashboard` (`docker exec`), reinjectant les
+facteurs DEJA STOCKES de 6 lignes reelles de `gold.fact_risk_score`
+(2 aux scores satures a 100, 2 a 0, 2 a une valeur intermediaire
+non-clampee 24.69 — echantillon volontairement diversifie, un score
+sature masquerait une divergence) dans `risk_formula.compute_risk_score()`.
+**`risk_score`/`risk_level` identiques sur les 6 lignes.** Seule
+`raw_risk_score` semblait diverger au premier essai (0.885000 stocke vs
+0.885048 recalcule) — investigation : `fact_risk_score.sql` arrondit
+`raw_risk_score` a 4 decimales UNIQUEMENT pour la colonne stockee
+(`round(raw_risk_score::numeric, 4)`), le `risk_score` normalise est lui
+calcule a partir de la valeur PLEINE PRECISION (la CTE `normalized` lit
+`raw_scored.raw_risk_score`, pas une version arrondie) — donc pas une
+divergence de formule, juste un arrondi d'affichage sur une colonne
+annexe. Confirme en arrondissant aussi le cote Python a 4dp avant
+comparaison : correspondance exacte.
+
+**`src/components/WhatIfSimulator.jsx`** (nouveau) : formulaire
+selecteur d'exercice (memes exercices REELLEMENT deja pratiques que
+"Logger une séance", `GET /users/{user_id}/exercises`) + charge/durée/
+répétitions/séries, bouton "Simuler" -> `POST /api/simulate-risk`,
+**reponse INSTANTANEE affichee immediatement (pas de polling, contrairement
+a "Logger une séance" qui attend 1-2 min)**. Bandeau
+"⚗ SIMULATION — HYPOTHÈSE, RIEN N'EST ENREGISTRÉ" (accent bleu, `border-dashed`,
+distinct de l'ambre du mode demo et du violet "EXPÉRIMENTAL" de la
+tendance ML — jamais confondu visuellement). Les 5 facteurs
+(base_zone/charge_factor/volume_factor/recup_factor/duree_factor) et
+leurs explications en langage clair (deja fournies par l'API) affiches
+integralement — meme transparence que le reste du projet. Score simule
+vs `risk_score_actuel` (deja en base) + delta colore. Desactive en mode
+demo (meme raisonnement deja etabli pour Nutrition/ML/Logger séance :
+aucun `user_id` reel associe aux scenarios synthetiques). Place dans la
+colonne GAUCHE, empile sous "Zones sensibles" (espace disponible dans
+cette colonne, silhouette centrale non touchee).
+
+**Testee reellement en conditions reelles** (`user_id=9`, "Bench Press
+(Barbell)") :
+1. **Hypothese charge tres elevee** (300kg vs moyenne reelle 112.7kg) :
+   `charge_factor=1.3` (penalise, +166%), `recup_factor=1.4` (penalise,
+   derniere seance reelle le jour meme), risque simule 15.05 (Faible)
+   vs actuel 0.66 (Faible), Δ+14.39 — coherent avec la formule
+   (base_zone Pectoraux=0.1 reste bas malgre les penalites cumulees, pas
+   un bug).
+2. **Hypothese modeste** (20kg, 15min, 8 reps, 2 series) :
+   `charge_factor=1.0` (neutre, -82%), `volume_factor=0.50` (plancher),
+   risque simule 2.54 (Faible), Δ+1.88 — reponse INSTANTANEE dans les
+   deux cas (pas d'attente).
+3. **Aucune ligne ajoutee en base** : verifie directement par requete SQL
+   dans `gold.fact_risk_score` (total 2169 lignes avant/apres identique,
+   aucune ligne avec charge=300kg ou 20kg pour cet exercice — les 5
+   lignes les plus recentes, 2026-07-08 a 2026-07-10, correspondent aux
+   vraies séances déjà loggées lors de sessions precedentes du Jalon 2,
+   pas aux hypotheses testees ici).
+4. **Mode demo confirme desactiver correctement** le panneau (message
+   explicite, pas d'ecran vide) ; **aucun debordement horizontal**
+   (verifie a 1440px, `scrollWidth === clientWidth`).
+5. `npm run build`/`lint` propres apres l'ajout du composant.
+
+**Fichiers** : `src/components/WhatIfSimulator.jsx` (nouveau),
+`src/api/client.js` (+`simulateRisk`, POST vers l'endpoint EXISTANT),
+`src/App.jsx` (integration colonne gauche, commentaire de layout mis a
+jour). **Aucun fichier backend (`dashboard/`) modifie** — endpoint
+reutilise a l'identique.
+
+### Correctif — Silhouette figee sur user_id=9 (2026-07-11)
+
+**Bug signale par l'utilisateur** : la silhouette centrale ne suivait
+jamais le selecteur d'utilisateur (contrairement a TOUS les autres
+widgets) — changer de profil mettait a jour le score global, les zones
+sensibles, la tendance, etc., mais la silhouette restait figee sur
+`user_id=9`. C'etait une limite ASSUMEE et documentee des la sous-etape
+2/N (contrainte explicite de l'epoque : ne pas retoucher
+`Silhouette.jsx`), pas un bug de rendu — cette contrainte n'est plus
+valable, la demande explicite est desormais de corriger ce lien.
+
+**Diagnostic (avant toute correction)** : `Silhouette.jsx` appelait
+directement `useUserRisk(HARDCODED_USER_ID)` (son propre fetch, avec
+`user_id=9` en dur), au lieu de lire `muscles`/`musclesStatus`/
+`selectedUserId`/`isDemoMode` depuis `DashboardContext` comme le font
+`TopBar.jsx`/`SensitiveZones.jsx`/`BottomTrends.jsx`. Ce n'etait donc ni
+un bug de state React non propage, ni un bug de re-application des
+couleurs : la silhouette avait simplement sa PROPRE source de verite,
+jamais branchee sur le contexte partage.
+
+**Corrige** (`src/components/Silhouette.jsx`) : remplacement de l'appel
+direct a `useUserRisk(HARDCODED_USER_ID)` par `useDashboard()` (memes
+`muscles`/`musclesStatus`/`selectedUserId`/`isDemoMode` que le reste du
+dashboard) — suppression de `HARDCODED_USER_ID` et de l'import
+`useUserRisk` (devenu inutile dans ce fichier). Le texte de statut sous
+la silhouette affiche desormais `selectedUserId` reel (ou "Scénario
+démo" en mode demo) au lieu de `user_id=9` fixe. Geometrie SVG et logique
+de coloration (`zoneColor`/`renderZoneShape`) INCHANGEES — seule la
+source des donnees a change. Commentaires obsoletes mis a jour dans
+`App.jsx` et `DashboardContext.jsx` (qui documentaient explicitement
+l'ancienne limite).
+
+**Teste reellement** (script Playwright dedie,
+`dashboard-v2/verify_silhouette_userswitch.cjs`, meme technique Chrome
+local que le reste du projet) :
+1. Etat initial : `user_id=9` -> silhouette colorée, "Utilisateur 9 — 8
+   zone(s) avec données".
+2. Toggle mode demo -> silhouette bascule sur le scenario synthetique
+   ("Scénario démo — 1 zone(s)"), sans planter ; retour en mode reel ->
+   silhouette revient correctement sur `user_id=9`.
+3. Changement vers `user_id=1` (profil SANS donnee reelle, via la
+   recherche par ID) -> silhouette entierement grisee, "Utilisateur 1 —
+   0 zone(s) avec données" — **confirme visuellement** par capture
+   d'ecran (toutes les zones neutres, aucune lueur).
+4. Retour a `user_id=9` via le `<select>` normal -> silhouette a nouveau
+   colorée correctement.
+5. Non-regression : Logger une séance / Simulateur what-if / Affluence
+   toujours presents et fonctionnels apres le correctif ; `npm run
+   build`/`lint` propres ; aucune NOUVELLE erreur JS console (le seul
+   avertissement observe, "key prop is being spread", est PRE-EXISTANT
+   et deja documente sous-etape 2/N, localise dans
+   `renderZoneShape`/`commonProps`, fichier non modifie par ce
+   correctif — pas une regression).
+- **Piege rencontre en ecrivant le script de verification (pas dans le
+  produit)** : enchainer immediatement une bascule mode demo apres avoir
+  utilise le champ de recherche par ID (sans le refermer) faisait
+  revenir `selectedUserId` sur la valeur recherchee au lieu du profil
+  reel precedent — cause reelle : le champ de recherche declenche
+  `trySelectFromSearch()` sur `onBlur`, et le demontage du champ (le
+  bloc JSX bascule entierement vers l'UI mode demo) peut declencher ce
+  blur avec une `searchValue` perimee encore en memoire. Comportement du
+  champ de recherche lui-meme (`TopBar.jsx`), PAS de la silhouette —
+  hors perimetre de ce correctif cible, non modifie, simplement contourne
+  dans l'ordre des etapes du script de verification.
+
+**Fichiers** : `src/components/Silhouette.jsx` (modifie),
+`src/App.jsx`/`src/context/DashboardContext.jsx` (commentaires mis a
+jour uniquement), `dashboard-v2/verify_silhouette_userswitch.cjs`
+(nouveau, script de verification reutilisable).
 
 ## Architecture cible (finale, toutes etapes confondues)
 

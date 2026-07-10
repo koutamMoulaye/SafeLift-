@@ -1,0 +1,35 @@
+/* SafeLift dashboard-v2 -- theme sombre "premium/holographique".
+   Tailwind v4 (config CSS-first via @theme, pas de tailwind.config.js
+   separe) -- voir CLAUDE.md pour le contexte de cette migration. */
+@import "tailwindcss";
+
+@theme {
+  /* Palette demandee : fond tres sombre + cyan/bleu/violet en accents.
+     Noms COURTS (sans prefixe "bg-"/"border-" redondant dans le nom du
+     token lui-meme) pour que les utilitaires Tailwind generes restent
+     lisibles (ex: --color-panel -> bg-panel/text-panel/border-panel). */
+  --color-deep: #070b12;
+  --color-panel: #0d1420;
+  --color-panel-alt: #121b2b;
+  --color-line: #1f2937;
+
+  --color-cyan: #00e5ff;
+  --color-blue: #3b82f6;
+  --color-violet: #8b5cf6;
+
+  /* Code couleur de risque -- IDENTIQUE a l'ancien dashboard
+     (dashboard/static/dashboard.css, COLOR_BY_LEVEL) pour ne jamais
+     introduire une divergence de sens entre les deux dashboards pendant
+     la migration. */
+  --color-risk-faible: #2ecc71;
+  --color-risk-modere: #f5a623;
+  --color-risk-eleve: #f0483e;
+  --color-risk-none: #3a4152;
+}
+
+body {
+  margin: 0;
+  background: var(--color-deep);
+  color: #e6e8ec;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}

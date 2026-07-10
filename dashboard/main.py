@@ -23,6 +23,7 @@ import psycopg2
 import psycopg2.pool
 from confluent_kafka import Producer
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2.extras import RealDictCursor
@@ -31,6 +32,25 @@ from pydantic import BaseModel
 import risk_formula
 
 app = FastAPI(title="SafeLift Dashboard", version="0.3.0")
+
+# CORS -- SEULE modification backend toleree pendant la migration vers
+# dashboard-v2 (React, voir CLAUDE.md). Ce dashboard existant (dashboard/)
+# sert son propre frontend en meme origine (StaticFiles ci-dessous), donc
+# n'a jamais eu besoin de CORS jusqu'ici -- dashboard-v2 tourne sur un port
+# Vite distinct (5173, cf. dashboard-v2/vite.config.js) et appelle donc
+# cette API en cross-origin. Origines EXPLICITEMENT listees (localhost:5173
+# en dev + 127.0.0.1:5173 pour les navigateurs qui resolvent differemment)
+# plutot que allow_origins=["*"], pour rester le plus restrictif possible
+# tout en debloquant le strict necessaire. Aucun endpoint existant modifie.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Libelles anatomiques francais : DUPLIQUES depuis MUSCLE_LABELS_FR de
 # dashboard/static/dashboard.js (petit dictionnaire statique, pas assez

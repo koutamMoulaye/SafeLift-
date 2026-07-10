@@ -913,3 +913,18 @@ preuve de correction structurelle forte, mais **la confirmation
 esthetique finale (l'ambiance "holographique" rend-elle bien visuellement
 comme decrit, les lueurs sont-elles equilibrees, rien ne parait-il
 surcharge) reste a faire par Moulaye sur http://localhost:18000**.
+
+## Suite : migration dashboard-v2 (React)
+
+A partir du 2026-07-10, l'effort frontend se poursuit sur un NOUVEAU
+projet `dashboard-v2/` (React, en parallele de l'ancien dashboard
+ci-dessus, qui reste le filet de securite pour la soutenance du
+2026-07-13). Ce n'est plus a proprement parler une sous-etape du Jalon 3
+(nutrition/ML) mais une migration transverse du serving existant —
+**suivi detaille dans CLAUDE.md, section "Migration dashboard-v2 (React)"**
+(sous-etapes 1/N a 5/N a ce jour : scaffolding, correctif wireframe,
+tous les widgets branches, selecteur allege, correctif toggle
+demo + graphique tendance recharts, simulateur what-if porte). Ce
+fichier-ci (`PROGRESS_JALON3.md`) reste la reference pour le travail
+Jalon 3 sur l'ancien dashboard (nutrition, ML, style holographique
+ci-dessus), inchange et clos.
