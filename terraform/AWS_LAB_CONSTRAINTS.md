@@ -313,10 +313,40 @@ dessous du budget de $50 du compte lab.
   rafraichir les donnees Gold sur S3, le versioning S3 active conserve les
   versions precedentes en cas de besoin de rollback.
 
+## ⚠️ Export S3/Athena DESYNCHRONISE de Gold depuis le 2026-07-11
+
+**Constat, pas une action effectuee dans cette tache** (extension
+multi-profils demo, voir CLAUDE.md et `data/gold/GOLD_MODEL_DECISIONS.md`
+section 5) : Gold Postgres a change substantiellement (`dim_user` : 1 ->
+5 profils `is_weight_training_demo_user=true` ; `fact_workout_session`/
+`fact_risk_score` repartis sur 5 `user_id` au lieu d'1 seul, 2 169 lignes au
+lieu de 2 164) **sans que l'export S3/Athena (dernier reel le 2026-07-07,
+voir ci-dessus) ne soit rafraichi.** Decision explicite : NE PAS toucher a
+l'export dans cette tache — sera refait en fin de projet avec des
+credentials AWS Learner Lab rafraichis (les credentials expirent en
+quelques heures sur ce type de compte, cf. contraintes documentees plus
+haut dans ce fichier).
+
+**Consequence concrete si interrogee AVANT ce rafraichissement** : toute
+requete Athena sur `gold.dim_user`/`gold.fact_workout_session`/
+`gold.fact_risk_score` refletera encore l'ANCIEN etat mono-profil
+(`user_pseudo_id` unique, 2 164 lignes) — a ne jamais presenter comme l'etat
+actuel du projet sans avoir prealablement relance `scripts/upload_gold_to_s3.py`
+(les 3 tables listees dans `TABLES_TO_RESYNC_ON_S3` de
+`scripts/gdpr_erase_user.py`, plus en realite les 7 tables Gold completes
+pour un rafraichissement propre).
+
+**A faire avant la demo finale** : rafraichir les credentials
+`awslearnerlab`, relancer `python scripts/upload_gold_to_s3.py`, puis
+rejouer les requetes Athena de validation (memes requetes que la section
+"Verification Athena" ci-dessus) pour confirmer `cnt = 2169` et la nouvelle
+distribution `risk_level`.
+
 ## Prochaine action
 
-Sous-etape 2/6 (S3 + Athena) terminee et verifiee de bout en bout. Ne pas
-anticiper une sous-etape 3/6 (CI/CD, pseudonymisation/RGPD, ou toute autre
-extension) sans demande explicite — voir regle du CLAUDE.md "ne pas
+Sous-etape 2/6 (S3 + Athena) terminee et verifiee de bout en bout au
+2026-07-06/07. Export desormais desynchronise de Gold (voir section
+ci-dessus) — a refaire avant la demo finale. Ne pas anticiper d'autre
+extension sans demande explicite — voir regle du CLAUDE.md "ne pas
 anticiper les etapes futures tant qu'elles n'ont pas ete explicitement
 demandees".

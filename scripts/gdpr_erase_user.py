@@ -77,11 +77,12 @@ CE QUE CE SCRIPT NE FAIT PAS (limites assumees et documentees)
   suppressions locales deja effectuees (Postgres/Bronze/Silver/CSV) --
   l'export S3 devra alors etre relance manuellement une fois les credentials
   rafraichis.
-- Protection integree : refuse `--confirm` sur le profil marque
-  `is_weight_training_demo_user=true` (le seul profil relie a de vraies
-  donnees de séance) sauf si `--i-understand-this-breaks-the-demo` est
-  egalement passe -- evite une effacement accidentel qui viderait le seul
-  jeu de donnees exploitable du dashboard de demo.
+- Protection integree : refuse `--confirm` sur un profil marque
+  `is_weight_training_demo_user=true` (depuis l'extension multi-profils du
+  2026-07-11, 5 profils distincts -- voir dbt/seeds/demo_user_blocks_seed.csv
+  -- portent ce flag, plus un seul) sauf si `--i-understand-this-breaks-the-demo`
+  est egalement passe -- evite un effacement accidentel qui viderait un des
+  jeux de donnees exploitables du dashboard de demo.
 """
 
 import argparse
@@ -305,8 +306,9 @@ def main() -> int:
         if profile["is_weight_training_demo_user"] and not args.i_understand_this_breaks_the_demo:
             print(
                 "\n[gdpr_erase_user] REFUS : ce profil est is_weight_training_demo_user=true, "
-                "le seul relie a de vraies donnees de seance (2164 lignes fact_*). "
-                "L'effacer casserait le dashboard de demo. Relancer avec "
+                "un des 5 profils demo relies a de vraies donnees de seance "
+                "(voir dbt/seeds/demo_user_blocks_seed.csv). "
+                "L'effacer casserait une partie du dashboard de demo. Relancer avec "
                 "--i-understand-this-breaks-the-demo si c'est reellement voulu."
             )
             return 1

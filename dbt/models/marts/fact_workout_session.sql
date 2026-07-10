@@ -1,13 +1,26 @@
 -- fact_workout_session : une ligne = un exercice realise dans une seance.
 -- Sources UNIFIEES (Jalon 2, sous-etape 3/5) : weight_training (Kaggle,
--- historique statique, rattache au demo_user) + realtime_user_sessions
+-- historique statique, reparti entre PLUSIEURS demo_users depuis
+-- l'extension multi-profils du 2026-07-11) + realtime_user_sessions
 -- (saisies utilisateur temps reel via le dashboard). L'union des deux
--- sources (avec l'agregation par-set -> par-exercice de weight_training)
--- est faite EN AMONT, au niveau staging
--- (stg_workout_sessions_unified.sql) -- voir ce modele pour le detail
--- complet et data/gold/GOLD_MODEL_DECISIONS.md section 11 pour la decision
--- d'architecture. 600k_fitness n'est TOUJOURS pas une source de faits
--- (uniquement le catalogue dim_exercise, decision d'architecture inchangee).
+-- sources (avec l'agregation par-set -> par-exercice de weight_training,
+-- ET l'assignation du user_id reel par bloc chronologique) est faite EN
+-- AMONT, au niveau staging (stg_workout_sessions_unified.sql) -- voir ce
+-- modele pour le detail complet et data/gold/GOLD_MODEL_DECISIONS.md
+-- section 11 pour la decision d'architecture. 600k_fitness n'est TOUJOURS
+-- pas une source de faits (uniquement le catalogue dim_exercise, decision
+-- d'architecture inchangee).
+--
+-- EXTENSION MULTI-PROFILS (2026-07-11) : `unified.user_id` est desormais
+-- TOUJOURS reel et non-null (les deux sources -- weight_training ET
+-- realtime -- portent un vrai user_id des le staging). Le
+-- `cross join demo_user` + `coalesce(u.user_id, du.user_id)` utilises
+-- AVANT cette extension (necessaires quand `unified.user_id` pouvait etre
+-- NULL pour weight_training, rattache a un seul demo_user ici) sont donc
+-- SUPPRIMES -- simplification directe, pas juste une preference de style :
+-- un cross join contre un `dim_user` filtre sur 5 lignes desormais
+-- (`is_weight_training_demo_user`) aurait multiplie chaque ligne par 5,
+-- ce qui aurait ete un bug reel (duplication x5 de fact_workout_session).
 --
 -- Grain d'agregation retenu : (user_id, session_date, workout_name,
 -- normalized_exercise_name) -- user_id AJOUTE au grain avec cette
@@ -49,12 +62,6 @@
 
 with unified as (
     select * from {{ ref('stg_workout_sessions_unified') }}
-),
-
-demo_user as (
-    select user_id
-    from {{ ref('dim_user') }}
-    where is_weight_training_demo_user
 )
 
 select
@@ -63,7 +70,7 @@ select
     ) as workout_session_id,
     ex.exercise_id,
     mu.muscle_id,
-    coalesce(u.user_id, du.user_id) as user_id,
+    u.user_id,
     dt.date_id,
     u.session_date,
     u.workout_name,
@@ -77,6 +84,5 @@ left join {{ ref('dim_exercise') }} ex
     on u.normalized_exercise_name = ex.normalized_exercise_name
 left join {{ ref('dim_muscle') }} mu
     on ex.muscle_group = mu.muscle_group
-cross join demo_user du
 left join {{ ref('dim_date') }} dt
     on u.session_date = dt.date_id

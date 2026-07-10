@@ -16,11 +16,11 @@ silencieux classique en ML : "training/serving skew").
 ⚠️ Limite structurelle, documentee et assumee (voir data/ml/ML_DATA_PREP.md
 et ML_TRAINING_RESULTS.md) : ce script ne peut produire une prediction que
 pour les (user_id, muscle_group) DEJA presents dans gold.fact_risk_score.
-Concretement, a ce stade du projet, cela signifie UNIQUEMENT user_id=9 (le
-seul utilisateur avec un historique de seances reel) -- les 972 autres
-profils gold.dim_user n'ont AUCUNE ligne fact_risk_score, ils n'apparaissent
-donc jamais dans fetch_weekly_aggregates() et RIEN n'est ecrit pour eux.
-Aucune extrapolation sur un historique vide n'est tentee.
+Depuis l'extension multi-profils du 2026-07-11, cela concerne les 5
+profils demo (user_id 9/21/34/46/83, voir dbt/seeds/demo_user_blocks_seed.csv)
+-- les 968 autres profils gold.dim_user n'ont AUCUNE ligne fact_risk_score,
+ils n'apparaissent donc jamais dans fetch_weekly_aggregates() et RIEN n'est
+ecrit pour eux. Aucune extrapolation sur un historique vide n'est tentee.
 
 Table cible : gold.ml_risk_prediction, creee directement par ce script
 (psycopg2, meme pattern que spark/jobs/stream_gym_occupancy.py pour

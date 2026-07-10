@@ -671,6 +671,107 @@ local que le reste du projet) :
 jour uniquement), `dashboard-v2/verify_silhouette_userswitch.cjs`
 (nouveau, script de verification reutilisable).
 
+## Extension multi-profils demo (2026-07-11)
+
+Decision actee : etendre les donnees reelles de demonstration d'**UN SEUL
+profil** (`user_id=9`) a **5 profils `dim_user` reels distincts**, en
+repartissant l'historique reel `weight_training` (570 jours de seance,
+2015-10-23 -> 2018-09-29) entre eux — toujours une **hypothese de
+demonstration** (aucune vraie cle de jointure entre `gym_members` et
+`weight_training`), mais repartie plutot que concentree sur un seul
+profil, pour une demo plus riche. Detail complet, decisions et chiffres
+exacts dans `data/gold/GOLD_MODEL_DECISIONS.md` section 5 — resume ici :
+
+- **Decoupage en 5 blocs chronologiques CONTIGUS** (aucun melange de
+  dates, `NTILE(5)` sur les 570 jours de seance distincts, 114 jours par
+  bloc) : preserve la continuite temporelle necessaire aux lag features
+  ML et aux facteurs `charge_factor`/`volume_factor`/`recup_factor`.
+  Source unique de verite : `dbt/seeds/demo_user_blocks_seed.csv`
+  (nouveau seed dbt), relu par `dim_user.sql` ET
+  `stg_workout_sessions_unified.sql`.
+- **5 profils selectionnes** (experience_level=3 maximum,
+  workout_frequency=5 maximum, alternance stricte de genre) : `user_id` 9
+  (18, Female — conserve intentionnellement pour continuite avec les
+  tests/captures anterieurs), 21 (18, Male), 34 (19, Female), 46 (19,
+  Male), 83 (21, Female).
+- **`is_weight_training_demo_user`** (colonne booleenne INCHANGEE) vaut
+  desormais `true` sur 5 lignes `dim_user` au lieu d'1 seule.
+- **`fact_workout_session.sql` simplifie** : le `cross join demo_user` +
+  `coalesce(user_id, demo_user.user_id)` (necessaires quand
+  `weight_training` n'avait pas de `user_id` reel avant assignation) sont
+  **supprimes** — `stg_workout_sessions_unified.sql` assigne desormais un
+  `user_id` reel et non-null des le staging (jointure sur
+  `session_date BETWEEN date_from AND date_to` du seed).
+- **Bug reel trouve et corrige PENDANT cette extension** (sans rapport
+  direct) : 2 soumissions reelles du meme exercice le meme jour
+  calendaire (tests anterieurs du formulaire "Logger une seance",
+  `user_id=9`, 2026-07-10) violaient le grain unique de
+  `fact_workout_session` (detecte par
+  `tests/assert_fact_workout_session_grain_unique.sql`) — corrige en
+  agregeant la source temps reel au meme grain que `weight_training`
+  (ponderee par le nombre de sets), voir
+  `stg_workout_sessions_unified.sql`. **99/99 tests dbt PASS** apres
+  correctif (2 170 -> 2 169 lignes `fact_workout_session`/`fact_risk_score`).
+- **RGPD re-verifie reellement sur cette nouvelle realite** (pas
+  supposee compatible) : `scripts/pseudonymize.py` teste sur les 5
+  `user_id` demo (coherence + absence de collision confirmees) ;
+  `scripts/gdpr_erase_user.py` re-teste en conditions reelles sur
+  `user_id=21` (dry-run + execution reelle `--confirm --skip-s3
+  --i-understand-this-breaks-the-demo`, puis **restauration complete** a
+  partir d'une sauvegarde CSV/Bronze/Silver + `dbt run` complet, 99/99
+  tests dbt confirmes apres restauration). `--skip-s3` utilise
+  intentionnellement — voir point AWS ci-dessous. Messages du garde-fou
+  et docstrings mis a jour ("le seul profil" -> "un des 5 profils demo").
+  Detail complet : `docs/RGPD_GOVERNANCE.md` section 5.
+- **ML (Jalon 3) recalcule de bout en bout** :
+  `scripts/prepare_ml_features.py` puis `scripts/train_risk_trend_model.py`
+  puis `scripts/score_risk_trend.py` re-executes reellement. Jeu labelise
+  637 lignes (821 agregees), legerement MOINS qu'avant (652/814,
+  mono-profil) — chaque profil recoit desormais un historique ~5x plus
+  court. Split temporel : 487 train / 150 test (coupure `2018-03-26`).
+  **RMSE test RandomForest (modele retenu) : 11.17** (contre 9.12 avant),
+  **Ridge : 11.32** (contre 9.27 avant), **baseline naive : 17.13** (contre
+  14.69 avant) — **degradation honnetement rapportee** sur les 3 modeles
+  (attribuee a la sequence plus courte par profil), mais RandomForest/Ridge
+  battent toujours nettement la baseline (~34-35% de reduction RMSE,
+  contre ~37-38% avant). Signal temporel (`lag_1..3`+`trend` = 41.2%
+  d'importance RandomForest) reste dominant mais l'ecart avec le signal
+  "identite de zone" (38.2%) s'est nettement resserre (45.7% vs signal de
+  zone marginal avant). `gold.ml_risk_prediction` desormais peuplee pour
+  les 5 profils (40 lignes, 8 par profil, contre 8 lignes pour 1 seul
+  profil avant). Detail complet et chiffres exhaustifs :
+  `data/ml/ML_DATA_PREP.md` et `data/ml/ML_TRAINING_RESULTS.md`.
+- **Dashboard (ancien ET dashboard-v2) : AUCUNE modification de code
+  necessaire**, confirme en testant reellement — les deux etaient deja
+  branches dynamiquement sur `GET /users` (`exists(select 1 from
+  fact_risk_score where user_id = du.user_id)`), qui liste desormais
+  automatiquement les 5 profils. Silhouette + simulateur what-if testes
+  reellement sur 3 nouveaux profils (21/34/46) sur dashboard-v2 (captures
+  a l'appui) et sur l'ancien dashboard (`user_id=46`, capture a l'appui) —
+  tous fonctionnels de bout en bout, y compris le panneau "Tendance
+  predictive" ML.
+- **Bug de texte trouve et corrige** : le disclaimer statique
+  `ML_PREDICTION_DISCLAIMER` (`dashboard/main.py`) affirmait encore
+  "modele entraine sur l'historique d'un seul utilisateur" — devenu
+  factuellement faux, corrige en "5 profils de demonstration". Conteneur
+  `dashboard` reconstruit/redemarre pour cette modification Python (pas
+  de bind mount sur ce service) ; 12 services confirmes `healthy` apres
+  rebuild, aucune regression.
+- **⚠️ Export S3/Athena volontairement NON touche dans cette extension**
+  (decision explicite) — desormais **desynchronise** de Gold (dernier
+  export reel : 2026-07-07, refletant encore l'ancien etat mono-profil).
+  A refaire avant la demo finale, une fois des credentials AWS Learner Lab
+  rafraichis. Voir `terraform/AWS_LAB_CONSTRAINTS.md` (note dediee) et
+  `docs/DATA_CATALOG.md`.
+- **Documentation mise a jour** : `data/gold/GOLD_MODEL_DECISIONS.md`
+  (section 5, reecrite), `docs/DATA_CATALOG.md`, `docs/RGPD_GOVERNANCE.md`
+  (nouvelle section 5), `data/ml/ML_DATA_PREP.md` (sections 5-9),
+  `data/ml/ML_TRAINING_RESULTS.md` (sections 3-6), ce fichier. Toutes les
+  mentions "mono-utilisateur"/"un seul profil"/"le seul relie a de vraies
+  donnees" remplacees par la nouvelle realite a 5 profils, **sans
+  supprimer l'historique** (les chiffres precedents restent visibles en
+  colonnes de comparaison, jamais silencieusement ecrases).
+
 ## Architecture cible (finale, toutes etapes confondues)
 
 ```

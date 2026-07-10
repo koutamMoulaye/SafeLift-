@@ -95,40 +95,67 @@ jamais comme entree d'un autre calcul.
 
 ## 5. Taille reelle du jeu de donnees — TRANSPARENCE COMPLETE
 
-**⚠️ Limitation majeure, a rappeler explicitement a l'etape suivante
-(entrainement) : un SEUL utilisateur (`user_id=9`, le "demo user" deja
-documente en Jalon 1) possede un historique `fact_risk_score` exploitable.**
-Les 972 autres profils `dim_user` n'ont aucune seance reelle rattachee
-(voir `GOLD_MODEL_DECISIONS.md` section 5) — **aucune generalisation
-inter-utilisateurs n'est possible avec ces donnees**, le modele de
-l'etape suivante ne pourra apprendre qu'un pattern **specifique a cet
-unique utilisateur**.
+**⚠️ MISE A JOUR (2026-07-11) : extension multi-profils.** Jusqu'au
+2026-07-10, un SEUL utilisateur (`user_id=9`) possedait un historique
+`fact_risk_score` exploitable — voir l'historique git de ce fichier pour
+les chiffres exacts de cette periode. Depuis l'extension multi-profils
+(`data/gold/GOLD_MODEL_DECISIONS.md` section 5), **5 profils `dim_user`
+distincts** (`user_id` 9, 21, 34, 46, 83) possedent chacun un historique
+reel exploitable, chacun sur un bloc chronologique CONTIGU distinct de
+l'historique `weight_training` (aucun chevauchement de dates entre
+profils). Les 968 autres profils `dim_user` restent sans seance reelle
+rattachee — **toujours aucune generalisation A CE QUI EST HORS DE CES 5
+PROFILS n'est possible**, mais le modele peut desormais apprendre sur un
+signal partage entre PLUSIEURS individus reels distincts (poids corporel,
+age, genre differents), ce qui n'etait pas le cas avant.
 
-**Chiffres reels obtenus (execution du 2026-07-09)** :
+**Chiffres reels obtenus (execution du 2026-07-11, apres l'extension
+multi-profils)** :
 
-| Metrique | Valeur |
+| Metrique | Valeur (2026-07-11) | Valeur avant l'extension (2026-07-09) |
+|---|---|---|
+| Lignes source (`gold.fact_risk_score`) | 2169 | 2166 |
+| Utilisateurs distincts | **5** (`user_id` 9, 21, 34, 46, 83) | 1 (`user_id=9`) |
+| Zones musculaires distinctes | 8 (`arms`, `back`, `chest`, `knee`, `legs`, `lower_back`, `shoulder`, `unknown`) | 8 (identique) |
+| Lignes agregees (user, zone, semaine) — table complete | **821** | 814 |
+| Plage de semaines (table complete) | 2015-10-19 -> 2026-07-06 (identique — les blocs par profil couvrent la MEME fenetre globale, repartie differemment) | 2015-10-19 -> 2026-07-06 |
+| Lignes avec `lag_1` disponible | 637 / 821 | 652 / 814 |
+| Lignes avec cible connue (labelisees) | **637 / 821** (184 exclues) | 652 / 814 (162 exclues) |
+
+**Constat honnete** : le volume TOTAL de lignes labelisees baisse
+legerement (637 vs 652, -2.3%) malgre 5x plus d'utilisateurs — chaque
+profil ne recoit desormais qu'1/5e environ de l'historique calendaire
+(un bloc plus court a moins de semaines consecutives disponibles pour
+calculer des `lag_N` sans trou), alors qu'avant, `user_id=9` a lui seul
+concentrait tout l'historique 2015-2018 en continu. C'est un compromis
+EXPLICITE de cette extension (diversite de profils contre longueur de
+sequence par profil), pas un effet de bord cache.
+
+**Repartition des 637 lignes labelisees par zone** (tres inegale — a
+rappeler comme limite, comparee a l'ancien etat mono-profil) :
+
+| Zone | Lignes labelisees (2026-07-11) | Lignes labelisees (avant, mono-profil) |
+|---|---|---|
+| chest | 131 | 134 |
+| back | 120 | 123 |
+| knee | 103 | 105 |
+| shoulder | 92 | 93 |
+| arms | 75 | 77 |
+| unknown | 48 | 50 |
+| lower_back | 50 | 52 |
+| **legs** | **18** | 18 (inchange, toujours la zone la plus rare) |
+
+**Repartition des 637 lignes labelisees par profil demo** (nouveau,
+n'existait pas avant l'extension — reparti relativement equitablement,
+comme attendu vu la taille comparable des 5 blocs chronologiques) :
+
+| `user_id` | Lignes labelisees |
 |---|---|
-| Lignes source (`gold.fact_risk_score`) | 2166 |
-| Utilisateurs distincts | **1** (`user_id=9`) |
-| Zones musculaires distinctes | 8 (`arms`, `back`, `chest`, `knee`, `legs`, `lower_back`, `shoulder`, `unknown`) |
-| Lignes agregees (user, zone, semaine) — table complete | **814** |
-| Plage de semaines (table complete) | 2015-10-19 -> 2026-07-06 |
-| Lignes avec `lag_1` disponible | 652 / 814 |
-| Lignes avec cible connue (labelisees) | **652 / 814** (162 exclues, pas de semaine suivante connue) |
-
-**Repartition des 652 lignes labelisees par zone** (tres inegale — a
-rappeler comme limite) :
-
-| Zone | Lignes labelisees |
-|---|---|
-| chest | 134 |
-| back | 123 |
-| knee | 105 |
-| shoulder | 93 |
-| arms | 77 |
-| lower_back | 52 |
-| unknown | 50 |
-| **legs** | **18** (zone la plus rare, tres peu de signal pour l'entrainement) |
+| 9 | 137 |
+| 21 | 132 |
+| 34 | 110 |
+| 46 | 127 |
+| 83 | 131 |
 
 ### ⚠️ Ecart de 8 ans dans l'historique — constat honnete, pas masque
 
@@ -151,80 +178,89 @@ brut de lignes, qui serait deforme par les zones a beaucoup de lignes) :
 les 20% de semaines les plus recentes vont en test, tout ce qui precede va
 en train. **Aucun melange aleatoire.**
 
-| | Valeur reelle |
-|---|---|
-| Semaines distinctes labelisees | 134 |
-| Ratio test vise | 20% |
-| Semaines en test | 27 (>= **2018-03-19**) |
-| Semaines en train | 107 |
-| **Lignes train** | **491** |
-| **Lignes test** | **161** |
-| Plage train | 2015-10-19 -> 2018-03-12 |
-| Plage test | 2018-03-19 -> 2018-09-17 |
+⚠️ **MIS A JOUR (2026-07-11) apres l'extension multi-profils** :
 
-**Date de coupure exacte : `2018-03-19`.** Verifie explicitement :
-`max(train.week_start_date) = 2018-03-12` < `min(test.week_start_date) =
-2018-03-19` (ecart d'exactement 1 semaine, aucun chevauchement).
+| | Valeur reelle (2026-07-11) | Valeur avant l'extension |
+|---|---|---|
+| Semaines distinctes labelisees | 132 | 134 |
+| Ratio test vise | 20% | 20% |
+| Semaines en test | 26 (>= **2018-03-26**) | 27 (>= 2018-03-19) |
+| Semaines en train | 106 | 107 |
+| **Lignes train** | **487** | 491 |
+| **Lignes test** | **150** | 161 |
+| Plage train | 2015-10-19 -> 2018-03-19 | 2015-10-19 -> 2018-03-12 |
+| Plage test | 2018-03-26 -> 2018-09-17 | 2018-03-19 -> 2018-09-17 |
+
+**Date de coupure exacte : `2018-03-26`** (`2018-03-19` avant l'extension).
+Verifie explicitement : `max(train.week_start_date) = 2018-03-19` <
+`min(test.week_start_date) = 2018-03-26` (ecart d'exactement 1 semaine,
+aucun chevauchement) — **le decalage de la coupure d'une semaine par
+rapport a l'ancienne valeur est un simple effet de bord du split par
+NOMBRE de semaines distinctes (20% de 132 semaines != 20% de 134
+semaines), pas une anomalie.**
 
 ### Repartition train/test par zone (calcule directement sur les Parquet)
 
-| Zone | Train | Test | Total |
-|---|---|---|---|
-| chest | 107 | 27 | 134 |
-| back | 96 | 27 | 123 |
-| knee | 78 | 27 | 105 |
-| shoulder | 72 | 21 | 93 |
-| arms | 57 | 20 | 77 |
-| unknown | 32 | 18 | 50 |
-| lower_back | 36 | 16 | 52 |
-| **legs** | **13** | **5** | **18** |
+| Zone | Train (2026-07-11) | Test (2026-07-11) | Total | Total avant l'extension |
+|---|---|---|---|---|
+| chest | 105 | 26 | 131 | 134 |
+| back | 95 | 25 | 120 | 123 |
+| knee | 77 | 26 | 103 | 105 |
+| shoulder | 72 | 20 | 92 | 93 |
+| arms | 57 | 18 | 75 | 77 |
+| unknown | 32 | 16 | 48 | 50 |
+| lower_back | 35 | 15 | 50 | 52 |
+| **legs** | **14** | **4** | **18** | 18 |
 
 ### Verdict de viabilite (seuil retenu : 20-30 lignes minimum pour qu'un entrainement ait un sens)
 
 - **Modele UNIQUE poole sur les 8 zones** (`muscle_group` comme feature
-  categorique) : **652 lignes labelisees au total (491 train / 161 test)**
-  — largement au-dessus du seuil, viable.
-- **Un modele PAR zone** (si c'est l'approche retenue a la sous-etape
-  suivante) : `chest`/`back`/`knee`/`shoulder`/`arms` restent tous
-  au-dessus du seuil (>= 77 lignes labelisees, test >= 20). **`legs` (13
-  train / 5 test, 18 au total) est EN DESSOUS du seuil** — un test set de
-  5 lignes ne permet aucune evaluation fiable, ce volume est **trop
-  faible pour qu'un entrainement par zone ait un sens sur `legs`**.
-  `unknown` (32 train / 18 test) est limite (juste au-dessus du seuil en
-  train, en dessous en test) — a traiter avec prudence d'autant que
-  `unknown` est une categorie fourre-tout (exercices non matches par le
-  pipeline fuzzy matching de Jalon 1, pas une vraie zone anatomique), pas
-  un signal biomecanique coherent a modeliser en soi.
-- **Consequence pour la sous-etape suivante** : privilegier un modele
-  unique poole (avec `muscle_group` en feature) plutot que 8 modeles
-  independants, sauf a accepter d'exclure/fusionner `legs` et `unknown`
-  d'une approche par-zone.
+  categorique) : **637 lignes labelisees au total (487 train / 150 test)**
+  — legerement moins qu'avant (652/491/161) mais toujours largement
+  au-dessus du seuil, viable.
+- **Un modele PAR zone** (si c'etait l'approche retenue) : le constat
+  reste **inchange par cette extension** — `chest`/`back`/`knee`/
+  `shoulder`/`arms` restent tous au-dessus du seuil (>= 75 lignes
+  labelisees, test >= 18). **`legs` (14 train / 4 test, 18 au total)
+  reste EN DESSOUS du seuil**, exactement comme avant. `unknown` (32
+  train / 16 test) reste limite, meme constat qu'avant (categorie
+  fourre-tout, pas une vraie zone anatomique).
+- **Consequence pour la sous-etape suivante** : le choix deja acte
+  (modele unique poole, `muscle_group` en feature) reste valide et n'a
+  pas besoin d'etre reconsidere suite a cette extension.
 
 ## 7. Verification anti-fuite (execution reelle, pas une relecture de code)
 
-Trois verifications executees pour de vrai sur les fichiers Parquet
-produits (voir aussi PROGRESS_JALON3.md pour le detail de la commande) :
+**RE-VERIFIE reellement le 2026-07-11** apres l'extension multi-profils
+(pas juste suppose stable) :
 
 1. **Aucun chevauchement de dates entre train et test** : confirme
-   `max(train.week_start_date) < min(test.week_start_date)`.
-2. **Verification manuelle d'une ligne** (`arms`, semaine 2016-01-18) :
-   `lag_1_risk_score` attendu `NULL` (aucune ligne a 2016-01-11 dans les
-   donnees brutes — confirme, requete directe renvoie un resultat vide) ;
-   `target_next_week_risk_score` attendu = valeur reelle a 2016-01-25
-   (`5.06`) — confirme, correspond exactement a la ligne brute trouvee a
-   cette date.
-3. **Les 2 lignes 2026-07-06 (test Jalon 2) absentes de train/test** :
-   confirme (`lag_1`/`target` tous deux `NULL` pour ces 2 lignes dans
-   `weekly_features_full.parquet`, et absence totale dans `train.parquet`/
-   `test.parquet`).
+   `max(train.week_start_date) = 2018-03-19` < `min(test.week_start_date)
+   = 2018-03-26` (re-execute sur les nouveaux fichiers Parquet).
+2. **Verification manuelle d'une ligne** (`arms`, semaine 2016-01-18,
+   desormais rattachee a `user_id=9`, dans le bloc chronologique 1) :
+   memes valeurs qu'avant l'extension (cette semaine tombe dans le bloc
+   toujours assigne a `user_id=9`) — `lag_1_risk_score` `NULL`,
+   `target_next_week_risk_score = 5.06`, inchange.
+3. **Les lignes `week_start_date=2026-07-06` absentes de train/test** :
+   **desormais 5 lignes** orphelines a cette date (vs 2 avant cette
+   extension — plus de tests reels du formulaire "Logger une seance" ont
+   ete effectues entre-temps, sur `user_id=9`, zones `arms`/`back`/
+   `chest`/`knee`/`lower_back`), toutes confirmees `lag_1`/`target` =
+   `NULL` dans `weekly_features_full.parquet`, et confirmees **absentes**
+   de `train.parquet`/`test.parquet` (0 ligne >= 2020-01-01 trouvee dans
+   les 2 fichiers) — exclues naturellement par la logique de lookup exact,
+   sans filtre special-case, exactement comme avant l'extension.
 
 ## 8. Fichiers produits
 
-| Fichier | Contenu | Lignes | Taille |
+**Chiffres mis a jour le 2026-07-11** (extension multi-profils) :
+
+| Fichier | Contenu | Lignes (2026-07-11) | Lignes (avant) |
 |---|---|---|---|
-| `data/ml/weekly_features_full.parquet` | Table complete (avec `NULL`), transparence totale | 814 | 54 Ko |
-| `data/ml/train.parquet` | Jeu d'entrainement (labelise, semaines < 2018-03-19) | 491 | 39 Ko |
-| `data/ml/test.parquet` | Jeu de test (labelise, semaines >= 2018-03-19) | 161 | 21 Ko |
+| `data/ml/weekly_features_full.parquet` | Table complete (avec `NULL`), transparence totale | 821 | 814 |
+| `data/ml/train.parquet` | Jeu d'entrainement (labelise, semaines < 2018-03-26) | 487 | 491 |
+| `data/ml/test.parquet` | Jeu de test (labelise, semaines >= 2018-03-26) | 150 | 161 |
 
 Colonnes de `train.parquet`/`test.parquet` : `user_id`, `muscle_group`,
 `week_start_date`, `risk_score_avg`, `charge_factor_avg`,
@@ -236,21 +272,32 @@ d'entree au moment de l'entrainement, sous-etape suivante).
 
 ## 9. Limites a rappeler explicitement a la sous-etape suivante (entrainement)
 
-- **Mono-utilisateur** : le modele n'apprendra un pattern QUE pour
-  `user_id=9`. Aucune preuve de generalisation a d'autres profils n'est
-  possible avec ces donnees — a presenter comme une preuve de concept
-  (Bloc 4 bonus), pas comme un modele pret pour production multi-utilisateurs.
-- **Volume tres petit pour un modele ML** : 491 lignes d'entrainement,
-  161 de test, reparties sur 8 zones tres inegalement (`legs` = 18 lignes
-  labelisees au total train+test). Un modele complexe (ex. deep learning)
-  serait deraisonnable ici — un modele simple (regression lineaire,
-  arbre peu profond) est plus adapte a ce volume, a trancher a l'etape
-  suivante.
-- **Ecart de 8 ans non comble** : aucune tentative de "combler" ce trou
-  par interpolation — les 2 lignes 2026 restent presentes dans la table
-  complete pour transparence, mais structurellement inutilisables pour
-  cette sous-etape (documente, pas masque).
-- **Historique reel confine a 2015-2018** : train/test portent tous les
-  deux sur cette meme fenetre historique — aucune notion de "donnees
+**⚠️ Mises a jour le 2026-07-11 suite a l'extension multi-profils :**
+
+- **PLUS mono-utilisateur, mais toujours limite a 5 profils de
+  demonstration** : le modele apprend desormais sur `user_id` 9, 21, 34,
+  46, 83 (au lieu du seul `user_id=9`) — un progres reel (signal partage
+  entre plusieurs individus reels, poids/age/genre distincts), mais
+  **aucune preuve de generalisation au-dela de ces 5 profils demo n'est
+  possible** avec ces donnees (les 968 autres profils `dim_user` n'ont
+  aucune seance reelle). Toujours a presenter comme une preuve de concept
+  (Bloc 4 bonus) enrichie, pas comme un modele pret pour une production
+  multi-utilisateurs generale.
+- **Volume LEGEREMENT plus petit qu'avant** (compromis assume de cette
+  extension, voir section 5) : 487 lignes d'entrainement (491 avant), 150
+  de test (161 avant), reparties sur 8 zones tres inegalement (`legs` =
+  18 lignes labelisees au total train+test, inchange). Un modele complexe
+  (ex. deep learning) reste deraisonnable ici — un modele simple
+  (regression lineaire, arbre peu profond) reste plus adapte a ce volume,
+  voir `ML_TRAINING_RESULTS.md` pour la reevaluation complete.
+- **Ecart de ~8 ans toujours non comble** : aucune tentative de "combler"
+  ce trou par interpolation — desormais **5 lignes** a
+  `week_start_date=2026-07-06` (contre 2 avant, plus de tests reels
+  effectues entre-temps) restent presentes dans la table complete pour
+  transparence, mais structurellement inutilisables pour cette
+  sous-etape (documente, pas masque).
+- **Historique reel confine a 2015-2018** (inchange) : train/test
+  portent tous les deux sur cette meme fenetre historique globale (repartie
+  differemment entre 5 profils desormais) — aucune notion de "donnees
   recentes" au sens calendaire actuel, uniquement au sens relatif de
   l'historique disponible.

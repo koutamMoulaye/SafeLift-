@@ -197,3 +197,35 @@ Voir [DATA_CATALOG.md](./DATA_CATALOG.md) pour le catalogue complet des
 tables, et `scripts/gdpr_erase_user.py` (docstring du script) pour le detail
 technique complet de l'implementation, des couches couvertes et des limites
 assumees.
+
+## 5. Re-verification suite a l'extension multi-profils (2026-07-11)
+
+L'extension de l'historique demo a 5 profils `dim_user` distincts (voir
+`data/gold/GOLD_MODEL_DECISIONS.md` section 5) ne remet en cause AUCUN
+mecanisme RGPD deja documente ci-dessus (pseudonymisation HMAC-SHA256,
+droit a l'effacement) — les deux ont ete RE-TESTES reellement sur cette
+nouvelle realite, pas juste supposes compatibles :
+
+- **`scripts/pseudonymize.py`** : testee sur les 5 `user_id` demo (9, 21,
+  34, 46, 83) avec la cle reelle (`PSEUDONYMIZATION_KEY`) — coherence
+  confirmee (meme `user_id` -> toujours le meme pseudonyme sur 2 appels
+  successifs) et absence de collision entre les 5 profils.
+- **`scripts/gdpr_erase_user.py`** : re-teste en conditions reelles sur
+  `user_id=21` (un des NOUVEAUX profils demo, PAS `user_id=9` — choix
+  explicite pour ne jamais perturber le profil demo principal). Dry-run
+  puis execution reelle (`--confirm --skip-s3
+  --i-understand-this-breaks-the-demo`, ce dernier flag desormais requis
+  car `is_weight_training_demo_user=true` sur 5 profils au lieu d'1 seul) :
+  suppression confirmee sur les 4 couches (Postgres Gold 973->972 lignes
+  `dim_user`, 406 lignes `fact_workout_session` supprimees, Silver/Bronze/CSV
+  973->972 lignes chacun), **puis restauree** a partir d'une sauvegarde des
+  fichiers CSV/Bronze/Silver (meme methodologie que le test precedent sur
+  `user_id=4`) suivie d'un `dbt run` complet (recalcule Gold depuis
+  `raw.silver_gym_members`, jamais modifiee directement par ce script) —
+  99/99 tests dbt PASS apres restauration, `user_id=21` confirme de nouveau
+  present avec ses 406 lignes `fact_workout_session`. `--skip-s3` utilise
+  intentionnellement (l'export S3 est explicitement laisse desynchronise
+  dans cette tache, voir `terraform/AWS_LAB_CONSTRAINTS.md`).
+- Messages du garde-fou (`is_weight_training_demo_user=true`) et
+  commentaires du docstring mis a jour pour ne plus dire "le seul profil"
+  (desormais factuellement faux) mais "un des 5 profils demo".

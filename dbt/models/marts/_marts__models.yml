@@ -48,9 +48,11 @@ models:
 
   - name: dim_user
     description: >
-      Profils d'utilisateurs (gym_members). Un seul profil porte
-      is_weight_training_demo_user=true (hypothese de demonstration, voir
-      GOLD_MODEL_DECISIONS.md).
+      Profils d'utilisateurs (gym_members). Depuis le 2026-07-11, 5 profils
+      distincts portent is_weight_training_demo_user=true (extension
+      multi-profils, hypothese de demonstration, voir
+      dbt/seeds/demo_user_blocks_seed.csv et GOLD_MODEL_DECISIONS.md
+      section 5).
     columns:
       - name: user_id
         data_tests:

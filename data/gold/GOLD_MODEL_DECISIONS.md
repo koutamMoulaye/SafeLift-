@@ -252,32 +252,96 @@ passe pas inapercu a la lecture du code.
 contient AUCUN identifiant utilisateur.** Aucune cle commune n'existe entre
 `weight_training` et `gym_members` (973 profils, source de `dim_user`) — ce
 sont deux jeux de donnees Kaggle independants, sans lien reel. Rattacher les
-9 142 lignes de `weight_training` (Silver) a UN SEUL profil de `dim_user`
-est une **hypothese de demonstration** necessaire pour que
+9 142 lignes de `weight_training` (Silver) a un (ou plusieurs) profil(s) de
+`dim_user` est une **hypothese de demonstration** necessaire pour que
 `fact_workout_session`/`fact_risk_score` aient une dimension utilisateur
 exploitable — **ce n'est PAS une jointure de donnees reelle.**
 
-**Critere de selection retenu** (100% deterministe,
+**⚠️ EXTENSION MULTI-PROFILS (2026-07-11)** — decision actee : plutot que de
+rattacher l'integralite de l'historique a UN SEUL profil (comme decrit
+ci-dessous jusqu'au 2026-07-10), l'historique est desormais **reparti entre
+5 profils `dim_user` distincts**, chacun recevant un **bloc chronologique
+CONTIGU** (aucun melange de dates) — demonstration plus riche (plusieurs
+profils reels exploitables, pas un seul), tout en preservant la continuite
+temporelle necessaire aux `lag_N_risk_score` (ML, voir `data/ml/ML_DATA_PREP.md`) et aux
+facteurs `charge_factor`/`volume_factor`/`recup_factor` (qui dependent de
+l'historique RECENT du meme utilisateur).
+
+**Decoupage des blocs** (570 jours de seance distincts, 2015-10-23 ->
+2018-09-29) : **decoupage EGAL par nombre de jours de seance** (pas de
+frontiere naturelle assez marquee dans les donnees pour 5 blocs — le plus
+grand ecart observe entre 2 jours de seance consecutifs est de 42 jours,
+entre le 2017-06-05 et le 2017-07-17, insuffisant a lui seul pour justifier
+un decoupage en 5 parties). `NTILE(5)` sur les jours de seance distincts,
+triés chronologiquement, donne exactement 114 jours par bloc :
+
+| Bloc | Bornes de dates              | `user_id` assigne | Seances (jour) | Lignes `fact_workout_session` |
+|------|-------------------------------|--------------------|-----------------|-------------------------------|
+| 1    | 2015-10-23 -> 2016-07-30      | 9                   | 114             | 565 (dont seances temps reel Jalon 2, voir plus bas) |
+| 2    | 2016-07-31 -> 2017-02-11      | 21                  | 114             | 406                            |
+| 3    | 2017-02-14 -> 2017-11-05      | 34                  | 114             | 348                            |
+| 4    | 2017-11-06 -> 2018-04-18      | 46                  | 114             | 462                            |
+| 5    | 2018-04-19 -> 2018-09-29      | 83                  | 114             | 388                            |
+
+Source unique de verite : `dbt/seeds/demo_user_blocks_seed.csv`, relu a la
+fois par `dim_user.sql` (pour marquer `is_weight_training_demo_user`) et
+`stg_workout_sessions_unified.sql` (pour assigner le `user_id` reel par
+`session_date BETWEEN date_from AND date_to`).
+
+**Critere de selection des 5 profils** (100% deterministe,
 `dbt/models/marts/dim_user.sql`) :
-1. `experience_level` le plus eleve (coherent avec un historique de
-   musculation de plusieurs annees, tel que celui de `weight_training`)
-2. en cas d'egalite, `workout_frequency_days_per_week` le plus eleve
-3. en dernier recours, `user_id` le plus petit (departage arbitraire mais
-   stable d'un run a l'autre)
+1. `experience_level` le plus eleve (=3, maximum de l'echelle observee) —
+   coherent avec un historique de musculation de plusieurs annees, tel que
+   celui de `weight_training`.
+2. Parmi ceux-ci, `workout_frequency_days_per_week` le plus eleve (=5).
+3. Tri par `user_id` croissant, puis **alternance stricte de genre** en
+   parcourant cette liste jusqu'a 5 profils retenus — vise une diversite de
+   genre pour une demo plus representative.
 
-**Profil selectionne (execution du 2026-07-03)** : `user_id=9`, 18 ans,
-Female, `experience_level=3` (maximum de l'echelle observee), 5 jours
-d'entrainement/semaine. Marque par la colonne booleenne
-`is_weight_training_demo_user=true` sur `dim_user` (une seule ligne `true`
-parmi les 973). Toutes les lignes de `fact_workout_session` portent donc le
-meme `user_id=9`.
+**Profils retenus** : `user_id` 9 (18 ans, Female), 21 (18 ans, Male), 34
+(19 ans, Female), 46 (19 ans, Male), 83 (21 ans, Female) — 3 Female / 2
+Male. `user_id=9` (l'ancien profil demo unique) est **intentionnellement
+conserve** parmi les 5, pour continuite avec les captures/tests deja
+realises sur ce profil avant cette extension — son contenu reel CHANGE
+neanmoins : il ne porte plus l'integralite de l'historique 2015-2018,
+seulement le 1er bloc chronologique (2015-10-23 -> 2016-07-30), plus les
+quelques lignes issues des tests reels du formulaire temps reel (Jalon 2,
+dates 2026), qui restent rattachees a `user_id=9` (ce sont des VRAIES
+saisies via l'API pour cet utilisateur, sans rapport avec le decoupage de
+`weight_training`).
 
-**Limite assumee** : les attributs demographiques de ce profil (age, genre,
-poids corporel...) n'ont aucun lien reel avec la personne ayant reellement
-pratique les seances de `weight_training`. Toute analyse croisant
-`fact_risk_score` avec les attributs de `dim_user` (ex: "risque par tranche
-d'age") serait donc trompeuse et ne doit pas etre presentee comme une
-conclusion valide.
+Marque par la colonne booleenne `is_weight_training_demo_user` sur
+`dim_user`, **desormais `true` sur 5 lignes** parmi les 973 (colonne
+INCHANGEE, boolean simple — avant l'extension, une seule ligne `true`).
+
+**Limite honnetement constatee (non corrigee, hors perimetre de cette
+extension)** : la diversite d'AGE des 5 profils reste faible (18-21 ans) —
+consequence directe du tri de `stg_gym_members.sql`
+(`order by age, gender, body_weight_kg, height_m, experience_level`), qui
+fait que les `user_id` les plus bas (candidats naturels du critere
+experience_level/frequence maximum) sont aussi les plus jeunes.
+
+**Limite assumee (inchangee depuis la version mono-profil)** : les
+attributs demographiques de ces profils (age, genre, poids corporel...)
+n'ont aucun lien reel avec les personnes ayant reellement pratique les
+seances de `weight_training`. Toute analyse croisant `fact_risk_score` avec
+les attributs de `dim_user` (ex: "risque par tranche d'age") serait donc
+trompeuse et ne doit pas etre presentee comme une conclusion valide.
+
+**Bug reel trouve et corrige PENDANT cette extension (sans rapport direct
+avec le multi-profils lui-meme)** : `dbt/tests/assert_fact_workout_session_grain_unique.sql`
+a detecte 1 violation de grain apres le premier `dbt run` de cette
+extension — 2 soumissions REELLES du meme exercice ("Bench Press
+(Barbell)") le meme jour calendaire (2026-07-10, `user_id=9`, tests
+anterieurs du formulaire "Logger une seance" de dashboard-v2) partageaient
+le meme grain `(user_id, session_date, workout_name, exercise_id)`. Cause
+racine : `stg_workout_sessions_unified.sql` agregeait deja `weight_training`
+au bon grain mais PAS la source temps reel (`realtime_sessions`), qui
+selectionnait les lignes 1:1 sans dedupe. Corrige en agregeant EGALEMENT
+cette source (ponderee par le nombre de sets de chaque soumission) — voir
+le commentaire dans `stg_workout_sessions_unified.sql`. 99/99 tests dbt
+PASS apres correctif (2 170 -> 2 169 lignes `fact_workout_session`/
+`fact_risk_score`).
 
 ## 6. Decision d'architecture : weight_training = seule source de faits
 

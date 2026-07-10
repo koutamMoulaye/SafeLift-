@@ -35,6 +35,16 @@ models:
 seeds:
   safelift:
     +schema: staging
+    demo_user_blocks_seed:
+      # Types explicites (pas d'inference automatique) : date_from/date_to
+      # doivent etre du meme type `date` que session_date (stg_weight_training)
+      # pour que le BETWEEN de stg_workout_sessions_unified.sql fonctionne
+      # sans cast implicite fragile.
+      +column_types:
+        block_number: integer
+        user_id: integer
+        date_from: date
+        date_to: date
 
 # Bornes theoriques de risk_score, partagees entre fact_risk_score.sql et
 # fact_risk_score_demo_synthetic.sql (evite la duplication de "nombres

@@ -244,9 +244,9 @@ def get_user_risk_history(user_id: int) -> dict:
 # jamais fusionnee, jamais presentee comme plus fiable.
 ML_PREDICTION_DISCLAIMER = (
     "Prédiction EXPÉRIMENTALE (bonus ML, hors périmètre de certification) — "
-    "modèle entraîné sur l'historique d'un seul utilisateur, à but exploratoire. "
-    "Ne remplace pas le risk_score déterministe ci-dessus, qui reste la seule "
-    "source de vérité du dashboard."
+    "modèle entraîné sur l'historique de 5 profils de démonstration, à but "
+    "exploratoire. Ne remplace pas le risk_score déterministe ci-dessus, qui "
+    "reste la seule source de vérité du dashboard."
 )
 
 

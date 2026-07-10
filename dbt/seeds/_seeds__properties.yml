@@ -47,3 +47,34 @@ seeds:
       - name: capacity_max
         data_tests:
           - not_null
+
+  - name: demo_user_blocks_seed
+    description: >
+      Repartition de l'historique weight_training (570 jours de seance
+      reels, 2015-10-23 -> 2018-09-29) en 5 blocs CHRONOLOGIQUES CONTIGUS,
+      chacun rattache a un profil dim_user REEL distinct (HYPOTHESE DE
+      DEMONSTRATION, aucune cle de jointure reelle -- voir dim_user.sql et
+      data/gold/GOLD_MODEL_DECISIONS.md section 5). Remplace l'ancien
+      rattachement a un seul demo_user (user_id=9 uniquement). Source
+      unique de verite utilisee par dim_user.sql (is_weight_training_demo_user)
+      ET stg_workout_sessions_unified.sql (assignation du user_id par
+      session_date). user_id fait reference a un id existant dans dim_user
+      -- PAS de test `relationships` ici (les seeds sont charges avant les
+      modeles marts, une relationship testerait dans le mauvais sens) ;
+      la coherence est verifiee manuellement (voir CLAUDE.md, section
+      "Extension multi-profils demo").
+    columns:
+      - name: block_number
+        data_tests:
+          - unique
+          - not_null
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null
+      - name: date_from
+        data_tests:
+          - not_null
+      - name: date_to
+        data_tests:
+          - not_null
