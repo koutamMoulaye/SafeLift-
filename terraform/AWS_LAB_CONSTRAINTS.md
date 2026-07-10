@@ -313,40 +313,46 @@ dessous du budget de $50 du compte lab.
   rafraichir les donnees Gold sur S3, le versioning S3 active conserve les
   versions precedentes en cas de besoin de rollback.
 
-## ⚠️ Export S3/Athena DESYNCHRONISE de Gold depuis le 2026-07-11
+## ✅ Export S3/Athena RE-SYNCHRONISE avec Gold (2026-07-11)
 
-**Constat, pas une action effectuee dans cette tache** (extension
-multi-profils demo, voir CLAUDE.md et `data/gold/GOLD_MODEL_DECISIONS.md`
-section 5) : Gold Postgres a change substantiellement (`dim_user` : 1 ->
-5 profils `is_weight_training_demo_user=true` ; `fact_workout_session`/
-`fact_risk_score` repartis sur 5 `user_id` au lieu d'1 seul, 2 169 lignes au
-lieu de 2 164) **sans que l'export S3/Athena (dernier reel le 2026-07-07,
-voir ci-dessus) ne soit rafraichi.** Decision explicite : NE PAS toucher a
-l'export dans cette tache — sera refait en fin de projet avec des
-credentials AWS Learner Lab rafraichis (les credentials expirent en
-quelques heures sur ce type de compte, cf. contraintes documentees plus
-haut dans ce fichier).
+**Contexte** : suite a l'extension multi-profils demo (voir CLAUDE.md et
+`data/gold/GOLD_MODEL_DECISIONS.md` section 5), l'export S3/Athena etait
+reste desynchronise de Gold Postgres pendant cette tache (decision
+explicite a l'epoque de ne pas y toucher). **Re-synchronise reellement le
+2026-07-11, meme jour** : les credentials `awslearnerlab` existants se
+sont averes encore valides (`aws sts get-caller-identity` confirme, compte
+`097115946702`, role `voclabs`) — aucun rafraichissement manuel via le
+portail AWS Academy n'a ete necessaire cette fois-ci.
 
-**Consequence concrete si interrogee AVANT ce rafraichissement** : toute
-requete Athena sur `gold.dim_user`/`gold.fact_workout_session`/
-`gold.fact_risk_score` refletera encore l'ANCIEN etat mono-profil
-(`user_pseudo_id` unique, 2 164 lignes) — a ne jamais presenter comme l'etat
-actuel du projet sans avoir prealablement relance `scripts/upload_gold_to_s3.py`
-(les 3 tables listees dans `TABLES_TO_RESYNC_ON_S3` de
-`scripts/gdpr_erase_user.py`, plus en realite les 7 tables Gold completes
-pour un rafraichissement propre).
+**`python scripts/upload_gold_to_s3.py` relance reellement** (pas un
+dry-run) : 7 tables re-exportees, **12 422 lignes au total**
+(`fact_workout_session`/`fact_risk_score` : 2 170 lignes chacune —
+**1 ligne de plus que les 2 169 documentees a la cloture de l'extension
+multi-profils** : une seance temps reelle supplementaire a ete traitee par
+le pipeline entre-temps, `user_id=46`, aucune violation de grain,
+`dbt test` reconfirme 99/99 PASS avant l'export — croissance organique
+normale du systeme, pas une anomalie).
 
-**A faire avant la demo finale** : rafraichir les credentials
-`awslearnerlab`, relancer `python scripts/upload_gold_to_s3.py`, puis
-rejouer les requetes Athena de validation (memes requetes que la section
-"Verification Athena" ci-dessus) pour confirmer `cnt = 2169` et la nouvelle
-distribution `risk_level`.
+**Requetes Athena de validation reelles (pas supposees), executees apres
+l'export** :
+- `SELECT count(*), count(DISTINCT user_pseudo_id) FROM gold.fact_risk_score`
+  -> **`cnt=2170`, `distinct_users=5`** — confirme les 5 profils demo
+  desormais visibles cote Athena (pseudonymises), coherent avec Gold
+  Postgres.
+- `SELECT risk_level, count(*) FROM gold.fact_risk_score GROUP BY
+  risk_level` -> **`Eleve=32`, `Faible=1820`, `Modere=318`** (somme =
+  2170) — identique a la distribution observee directement sur
+  `app-postgres`.
+- `SELECT user_pseudo_id FROM gold.dim_user LIMIT 3` -> hachages
+  hexadecimaux de 64 caracteres confirmes (aucun `user_id` en clair visible
+  cote AWS, pseudonymisation HMAC-SHA256 toujours appliquee correctement).
 
 ## Prochaine action
 
 Sous-etape 2/6 (S3 + Athena) terminee et verifiee de bout en bout au
-2026-07-06/07. Export desormais desynchronise de Gold (voir section
-ci-dessus) — a refaire avant la demo finale. Ne pas anticiper d'autre
+2026-07-06/07, puis **re-synchronisee avec l'etat multi-profils le
+2026-07-11** (voir section ci-dessus). Export desormais a jour avec Gold —
+plus d'action requise sur ce point avant la demo. Ne pas anticiper d'autre
 extension sans demande explicite — voir regle du CLAUDE.md "ne pas
 anticiper les etapes futures tant qu'elles n'ont pas ete explicitement
 demandees".

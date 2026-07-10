@@ -39,8 +39,8 @@
 | `dim_muscle` | 9 zones musculaires + `base_epidemiological_risk` (hypothese de modelisation). | Aucune. | Non applicable. | Illimitee. | Non applicable. |
 | `dim_date` | Dimension calendaire. | Aucune. | Non applicable. | Illimitee. | Non applicable. |
 | `dim_user` | 973 profils (`user_id` + attributs physiologiques + `is_weight_training_demo_user`, **vrai sur 5 lignes depuis le 2026-07-11**, une seule avant). | `user_id` (identifiant direct) + toutes les colonnes physiologiques (Art. 9). Quasi-identifiants combines (age+gender+poids+taille+bmi) — risque residuel documente, voir RGPD_GOVERNANCE.md 1.1. | Consentement explicite (Art. 9.2.a) si donnees reelles. | Duree du compte + 30 jours, puis anonymisation. | **Oui, a l'export S3** : `user_id` -> `user_pseudo_id` (HMAC-SHA256). En clair dans Postgres (couche interne, jamais exposee publiquement — voir RGPD_GOVERNANCE.md 1.3 pour la justification). |
-| `fact_workout_session` | 2 169 lignes (2 164 avant l'extension multi-profils du 2026-07-11, +5 lignes temps reel entre-temps), 1 ligne = 1 exercice realise dans une seance (charge, repetitions, duree), reparties sur 5 `user_id` distincts. | `user_id` (FK) ; `lifted_weight_kg`/`duration_seconds` sont des donnees d'activite physique liees a un individu. | Consentement explicite si donnees reelles. | 36 mois glissants, puis agregation anonymisee. | **Oui, a l'export S3** (memes modalites que `dim_user`). |
-| `fact_risk_score` | 2 169 lignes, memes grain que `fact_workout_session` + score de risque deterministe (`base_zone`, `charge_factor`, etc.). | `user_id` (FK) ; le `risk_score` lui-meme est une donnee derivee de sante (evaluation d'un risque physiologique individuel). | Consentement explicite si donnees reelles. | 36 mois glissants, puis agregation anonymisee. | **Oui, a l'export S3** (memes modalites). |
+| `fact_workout_session` | ~2 170 lignes (croissance organique continue via l'API temps reel, ex: 2 164 avant l'extension multi-profils du 2026-07-11, 2 169 juste apres, 2 170 au dernier export S3 le meme jour), 1 ligne = 1 exercice realise dans une seance (charge, repetitions, duree), reparties sur 5 `user_id` distincts. | `user_id` (FK) ; `lifted_weight_kg`/`duration_seconds` sont des donnees d'activite physique liees a un individu. | Consentement explicite si donnees reelles. | 36 mois glissants, puis agregation anonymisee. | **Oui, a l'export S3** (memes modalites que `dim_user`). |
+| `fact_risk_score` | ~2 170 lignes, memes grain que `fact_workout_session` + score de risque deterministe (`base_zone`, `charge_factor`, etc.). | `user_id` (FK) ; le `risk_score` lui-meme est une donnee derivee de sante (evaluation d'un risque physiologique individuel). | Consentement explicite si donnees reelles. | 36 mois glissants, puis agregation anonymisee. | **Oui, a l'export S3** (memes modalites). |
 | `fact_risk_score_demo_synthetic` | 9 scenarios 100% fictifs (`is_synthetic_demo=true` sur toutes les lignes), aucun lien a un `user_id` reel. | Aucune (donnees inventees pour la demo). | Non applicable. | Illimitee. | Non applicable (pas de `user_id`). |
 
 ## S3 / Athena (export externe, `s3://safelift-datalake-097115946702/gold/`)
@@ -52,8 +52,8 @@ de `user_id` (bigint) — voir `scripts/upload_gold_to_s3.py` et
 `terraform/athena.tf`. Chiffrement au repos : SSE-S3/AES256 (voir
 `terraform/s3.tf`). Acces public entierement bloque.
 
-⚠️ **DESYNCHRONISE depuis l'extension multi-profils du 2026-07-11** (voir
-`terraform/AWS_LAB_CONSTRAINTS.md`) : cet export S3 reflete encore l'ancien
-etat mono-profil de Gold (dernier export reel : 2026-07-07). A refaire
-avant la demo finale, une fois des credentials AWS Learner Lab rafraichis
-(decision explicitement differee, hors perimetre de cette extension).
+✅ **RE-SYNCHRONISE le 2026-07-11** (meme jour que l'extension
+multi-profils, voir `terraform/AWS_LAB_CONSTRAINTS.md`) : export relance
+reellement (7 tables, 12 422 lignes), requetes Athena de validation
+confirmant `cnt=2170`/`distinct_users=5` sur `gold.fact_risk_score`,
+coherent avec Gold Postgres.
