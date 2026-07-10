@@ -35,12 +35,16 @@ metastore_db/
 data/bronze/*
 data/silver/*
 data/gold/*
+data/ml/*
 !data/bronze/.gitkeep
 !data/silver/.gitkeep
 !data/gold/.gitkeep
+!data/ml/.gitkeep
 !data/bronze/SCHEMA_NOTES.md
 !data/silver/CLEANING_LOG.md
 !data/gold/GOLD_MODEL_DECISIONS.md
+!data/ml/ML_DATA_PREP.md
+!data/ml/ML_TRAINING_RESULTS.md
 
 # === dbt ===
 dbt/target/

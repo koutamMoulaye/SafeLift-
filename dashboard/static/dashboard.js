@@ -58,6 +58,57 @@ let isDemoMode = false;
 let currentRealMuscles = []; // dernieres donnees /users/{id}/risk.muscles
 let currentDemoScenarios = []; // donnees /demo/scenarios
 
+// --- Navigation par onglets (SPA-style, changement de vue en JS) ---
+// Changement de vue PUREMENT visuel (classes CSS) -- aucun element n'est
+// jamais retire du DOM en changeant d'onglet. C'est ce qui garantit que la
+// connexion SSE de l'affluence (ouverte une seule fois dans init(), voir
+// connectOccupancyStream()) continue de recevoir des evenements et de
+// mettre a jour ses cards meme quand l'onglet "Affluence" n'est pas
+// affiche : l'EventSource est une variable JS independante de toute
+// visibilite DOM, jamais fermee/recreee ici (verifie reellement, voir
+// PROGRESS_JALON3.md sous-etape 6/6).
+function switchTab(tabName) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tabPanel === tabName);
+  });
+}
+
+// --- Anti-debordement : selects natifs ---
+// Un <select> HTML ne wrap jamais son texte et le tronque BRUTALEMENT (sans
+// "…") des que le texte selectionne depasse la largeur de la boite --
+// contrairement a un <span>/<div>, CSS text-overflow:ellipsis n'a qu'un
+// effet partiel et peu fiable sur l'etat FERME d'un <select> natif selon
+// les navigateurs. Plutot que de compter uniquement sur le CSS, le texte
+// est tronque explicitement ici AVANT d'etre insere comme option -- le
+// texte COMPLET reste toujours disponible via l'attribut title (survol de
+// la liste deroulante ouverte, et de la boite fermee via updateSelectTitle
+// ci-dessous).
+// maxLen=42 calibre sur la colonne la plus etroite reellement utilisee
+// (.simulator-form/.log-session-form-wrapper : 320px, ~280px utiles apres
+// padding) -- verifie sur les 81 exercices reels de user_id=9 : le nom le
+// plus long observe ("Seated Military Press (Dumbbell) (Épaules /
+// deltoïdes)", 54 caracteres) deborderait visuellement d'une colonne de
+// 320px a ~0.9rem AVANT meme d'atteindre un seuil de troncature naif de 55
+// caracteres (mesure en pixels, pas en caracteres) -- d'ou un seuil plus
+// conservateur que la simple "ca semble raisonnable".
+function truncateForSelect(text, maxLen = 42) {
+  if (!text || text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1)}…`;
+}
+
+// Synchronise le title du <select> FERME sur l'option actuellement
+// selectionnee. Attache comme listener "change" UNE SEULE FOIS dans init()
+// (jamais dans les fonctions de repopulation, appelees a chaque changement
+// d'utilisateur, pour ne jamais empiler des listeners dupliques sur un
+// select reutilise).
+function updateSelectTitle(selectEl) {
+  const opt = selectEl.options[selectEl.selectedIndex];
+  selectEl.title = opt ? opt.title || "" : "";
+}
+
 const zoneElements = () => document.querySelectorAll(".zone");
 
 function colorZones(byMuscleGroup) {
@@ -68,7 +119,16 @@ function colorZones(byMuscleGroup) {
   zoneElements().forEach((el) => {
     const muscle = el.dataset.muscle;
     const entry = byMuscleGroup[muscle];
-    el.style.fill = entry ? COLOR_BY_LEVEL[entry.risk_level] || COLOR_NO_DATA : COLOR_NO_DATA;
+    const color = entry ? COLOR_BY_LEVEL[entry.risk_level] || COLOR_NO_DATA : COLOR_NO_DATA;
+    el.style.fill = color;
+    // Lueur holographique : UNIQUEMENT sur les zones avec une vraie donnee
+    // (jamais sur le gris "pas de donnee", qui suggererait a tort un etat
+    // actif) -- couleur TOUJOURS identique au remplissage (vert/ambre/
+    // rouge), pilotee via une variable CSS (voir .zone dans dashboard.css)
+    // plutot qu'un style.filter direct, pour ne jamais entrer en conflit
+    // avec les filtres CSS de :hover/.selected (qui doivent pouvoir
+    // s'additionner a cette lueur, pas l'ecraser).
+    el.style.setProperty("--zone-glow-color", entry ? color : "transparent");
   });
 }
 
@@ -76,9 +136,18 @@ function clearZoneSelection() {
   zoneElements().forEach((el) => el.classList.remove("selected"));
 }
 
+// Langage "gros chiffre + label discret" (coherent avec les autres cards
+// du dashboard) : le score en grand avec une lueur holographique de la
+// couleur du niveau, la pastille de niveau (Faible/Modere/Eleve) en
+// discret a cote. Remplace l'ancien badge unique "score — niveau" (pilule
+// pleine peu lisible pour un chiffre mis en avant).
 function scoreBadge(level, score) {
   const color = COLOR_BY_LEVEL[level] || COLOR_NO_DATA;
-  return `<span class="score-badge" style="background:${color}">${score} — ${level}</span>`;
+  return `
+    <span class="score-hero">
+      <span class="score-hero-value" style="color:${color}; text-shadow: 0 0 14px ${color};">${score}</span>
+      <span class="score-hero-level" style="background:${color}">${level}</span>
+    </span>`;
 }
 
 function renderFactorBars(factors) {
@@ -152,7 +221,7 @@ function renderSensitiveZones(entries) {
       const color = COLOR_BY_LEVEL[entry.risk_level] || COLOR_NO_DATA;
       return `
         <div class="sensitive-zone-row">
-          <span class="zone-name">${muscleLabel}</span>
+          <span class="zone-name" title="${muscleLabel}">${muscleLabel}</span>
           <span class="zone-reason">${reasonText}</span>
           <span class="level-badge" style="background:${color}">${entry.risk_level} (${entry.risk_score})</span>
         </div>`;
@@ -189,14 +258,21 @@ function renderGauge(entries) {
   if (!global) {
     arc.setAttribute("stroke-dashoffset", GAUGE_CIRCUMFERENCE.toFixed(1));
     arc.setAttribute("stroke", COLOR_NO_DATA);
+    arc.style.setProperty("--gauge-glow", "transparent");
     number.textContent = "—";
     levelLabel.textContent = "Aucune donnée";
     return global;
   }
 
   const pct = Math.max(0, Math.min(100, global.risk_score)) / 100;
+  const color = COLOR_BY_LEVEL[global.risk_level] || COLOR_NO_DATA;
   arc.setAttribute("stroke-dashoffset", (GAUGE_CIRCUMFERENCE * (1 - pct)).toFixed(1));
-  arc.setAttribute("stroke", COLOR_BY_LEVEL[global.risk_level] || COLOR_NO_DATA);
+  arc.setAttribute("stroke", color);
+  // Lueur holographique de l'anneau : couleur TOUJOURS identique au trace
+  // (vert/ambre/rouge), pilotee via une variable CSS plutot qu'un
+  // style.filter direct -- l'effet visuel (filter:drop-shadow) reste
+  // defini en CSS (.gauge-arc), seule la couleur est injectee ici.
+  arc.style.setProperty("--gauge-glow", color);
   number.textContent = global.risk_score.toFixed(0);
   levelLabel.textContent = `Score global (max des zones) — ${global.risk_level}`;
   return global;
@@ -209,13 +285,20 @@ function renderLastSessionKpi(entries, fallbackLabel) {
   const subEl = document.getElementById("kpi-last-session-sub");
   if (!entries || entries.length === 0) {
     valueEl.textContent = fallbackLabel || "—";
+    valueEl.title = "";
     subEl.textContent = "";
+    subEl.title = "";
     return;
   }
   // La ligne avec la session_date la plus recente, tous zones confondues
   const latest = entries.reduce((acc, e) => (!acc || e.session_date > acc.session_date ? e : acc), null);
+  // Anti-debordement : un nom d'exercice long est tronque par CSS
+  // (text-overflow:ellipsis, voir dashboard.css) -- le texte complet reste
+  // disponible au survol via title.
   valueEl.textContent = latest.exercise_name || fallbackLabel;
+  valueEl.title = latest.exercise_name || "";
   subEl.textContent = latest.session_date ? `${MUSCLE_LABELS_FR[latest.muscle_group] || latest.muscle_group} — ${latest.session_date}` : "";
+  subEl.title = subEl.textContent;
 }
 
 function renderAlertsKpi(entries) {
@@ -379,6 +462,8 @@ async function onUserChange() {
   if (!isDemoMode) {
     await loadSimulatorExercises(userId);
     await loadLogSessionExercises(userId);
+    await loadNutrition(userId);
+    await loadMlPrediction(userId);
   }
 }
 
@@ -392,11 +477,14 @@ async function loadDemoScenarios() {
   currentDemoScenarios.forEach((s) => {
     const opt = document.createElement("option");
     opt.value = s.scenario_id;
-    opt.textContent = `#${s.scenario_id} — ${s.scenario_label} (${s.risk_level})`;
+    const fullLabel = `#${s.scenario_id} — ${s.scenario_label} (${s.risk_level})`;
+    opt.textContent = truncateForSelect(fullLabel);
+    opt.title = fullLabel;
     select.appendChild(opt);
   });
   if (currentDemoScenarios.length > 0) {
     select.value = currentDemoScenarios[0].scenario_id;
+    updateSelectTitle(select);
     onScenarioChange();
   }
 }
@@ -494,9 +582,12 @@ async function loadSimulatorExercises(userId) {
   currentSimExercises.forEach((ex) => {
     const opt = document.createElement("option");
     opt.value = ex.exercise_id;
-    opt.textContent = `${ex.exercise_name} (${MUSCLE_LABELS_FR[ex.muscle_group] || ex.muscle_group})`;
+    const fullLabel = `${ex.exercise_name} (${MUSCLE_LABELS_FR[ex.muscle_group] || ex.muscle_group})`;
+    opt.textContent = truncateForSelect(fullLabel);
+    opt.title = fullLabel;
     select.appendChild(opt);
   });
+  updateSelectTitle(select);
 }
 
 function clearSimHighlight() {
@@ -662,9 +753,12 @@ async function loadLogSessionExercises(userId) {
     const opt = document.createElement("option");
     opt.value = ex.exercise_name;
     opt.dataset.muscleGroup = ex.muscle_group;
-    opt.textContent = `${ex.exercise_name} (${MUSCLE_LABELS_FR[ex.muscle_group] || ex.muscle_group})`;
+    const fullLabel = `${ex.exercise_name} (${MUSCLE_LABELS_FR[ex.muscle_group] || ex.muscle_group})`;
+    opt.textContent = truncateForSelect(fullLabel);
+    opt.title = fullLabel;
     select.appendChild(opt);
   });
+  updateSelectTitle(select);
 }
 
 function applyLogSessionAvailability() {
@@ -779,6 +873,137 @@ async function onLogSessionSubmit() {
   logSessionPollTimer = setTimeout(poll, LOG_SESSION_POLL_INTERVAL_MS);
 }
 
+// --- Nutrition (Jalon 3, sous-etape 2/6) ---
+// Lecture directe de GET /users/{id}/nutrition (gold.fact_nutrition_target
+// deja calculee par dbt, AUCUN recalcul cote frontend). Disponible pour
+// TOUT utilisateur reel (contrairement aux donnees de risque, limitees au
+// demo user) -- desactive uniquement en mode demo.
+
+// Bornes d'affichage de la jauge proteique -- PAS une recommandation, juste
+// une echelle visuelle raisonnable pour que la barre reste lisible quel
+// que soit le poids de l'utilisateur (le maximum reellement observe sur
+// les 973 profils est ~208g/jour, voir PROGRESS_JALON3.md) : 300g/jour
+// donne une marge confortable sans jamais saturer la barre a 100% pour un
+// profil reel de ce dataset.
+const NUTRITION_PROTEIN_GAUGE_MAX_G = 300;
+
+function applyNutritionAvailability() {
+  document.getElementById("nutrition-unavailable").classList.toggle("hidden", !isDemoMode);
+  document.getElementById("nutrition-content").classList.toggle("hidden", isDemoMode);
+}
+
+async function loadNutrition(userId) {
+  const disclaimerEl = document.getElementById("nutrition-disclaimer");
+  let data;
+  try {
+    const res = await fetch(`/users/${userId}/nutrition`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    disclaimerEl.textContent = "Données nutritionnelles indisponibles pour cet utilisateur.";
+    document.getElementById("nutrition-bmr").textContent = "—";
+    document.getElementById("nutrition-tdee").textContent = "—";
+    document.getElementById("nutrition-protein-value").textContent = "—";
+    document.getElementById("nutrition-protein-gauge").style.width = "0%";
+    document.getElementById("nutrition-food-list").innerHTML = "";
+    return;
+  }
+
+  // Avertissement ethique : toujours affiche, en tout premier, jamais
+  // conditionne a une interaction de l'utilisateur -- texte fourni par
+  // l'API elle-meme (source unique de verite, voir dashboard/main.py) pour
+  // qu'il ne soit jamais reformule ou omis par erreur cote frontend.
+  disclaimerEl.textContent = `⚠️ ${data.disclaimer}`;
+
+  document.getElementById("nutrition-bmr").textContent = `${Math.round(data.bmr_kcal)} kcal/jour`;
+  // Chiffre + unite separes (span dedie .hero-stat-unit, taille reduite)
+  // plutot qu'une seule chaine a la taille "hero" (2rem) -- une chaine
+  // combinee "2446 kcal/jour" deborderait une card de 260px a cette
+  // taille de police (verifie : ~14 caracteres en gras a 2rem approche/
+  // depasse la largeur utile de la card). Seul le NOMBRE reste en grande
+  // taille, l'unite reste discrete a cote.
+  document.getElementById("nutrition-tdee").innerHTML =
+    `${Math.round(data.tdee_kcal)}<span class="hero-stat-unit"> kcal/jour</span>`;
+  document.getElementById("nutrition-activity-meta").textContent =
+    `Facteur d'activité ${parseFloat(data.activity_factor).toFixed(2)} — ${data.workout_frequency_days_per_week} jour(s) d'entraînement/semaine, poids ${data.body_weight_kg}kg.`;
+
+  const proteinTarget = parseFloat(data.protein_target_g_per_day);
+  const proteinPct = Math.max(0, Math.min(100, (proteinTarget / NUTRITION_PROTEIN_GAUGE_MAX_G) * 100));
+  document.getElementById("nutrition-protein-gauge").style.width = `${proteinPct}%`;
+  document.getElementById("nutrition-protein-value").innerHTML =
+    `${proteinTarget.toFixed(1)}<span class="hero-stat-unit"> g/jour</span>`;
+  document.getElementById("nutrition-protein-meta").textContent =
+    `${parseFloat(data.protein_g_per_kg_target).toFixed(1)} g/kg × ${data.body_weight_kg}kg de poids corporel.`;
+
+  const foodList = document.getElementById("nutrition-food-list");
+  foodList.innerHTML = data.suggested_foods
+    .map(
+      (food) => `
+        <li class="nutrition-food-item">
+          <span class="nutrition-food-name" title="${food.food_name}">${food.food_name}</span>
+          <span class="nutrition-food-macros">${Math.round(food.kcal_per_100g)} kcal · ${food.protein_g_per_100g.toFixed(1)}g protéines /100g</span>
+        </li>`
+    )
+    .join("");
+}
+
+// --- Tendance prédictive (bonus ML, Jalon 3 sous-etape 5/6) ---
+// GET /users/{user_id}/risk/prediction lit gold.ml_risk_prediction (deja
+// calculee par scripts/score_risk_trend.py, orchestre par le DAG
+// ml_scoring) -- AUCUN calcul cote frontend. DECISION DEJA ACTEE : cet
+// encart reste TOUJOURS visuellement distinct du risk_score deterministe
+// (bordure pointillee + badge EXPERIMENTAL, voir dashboard.css), jamais
+// fusionne, jamais presente comme plus fiable. Desactive en mode demo
+// (memes raisons que le simulateur what-if/nutrition : pas d'user_id reel).
+
+function applyMlPredictionAvailability() {
+  document.getElementById("ml-prediction-unavailable").classList.toggle("hidden", !isDemoMode);
+  document.getElementById("ml-prediction-content").classList.toggle("hidden", isDemoMode);
+}
+
+async function loadMlPrediction(userId) {
+  const disclaimerEl = document.getElementById("ml-prediction-disclaimer");
+  const listEl = document.getElementById("ml-prediction-list");
+  let data;
+  try {
+    const res = await fetch(`/users/${userId}/risk/prediction`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    disclaimerEl.textContent = "";
+    listEl.innerHTML = '<p class="placeholder">Prédiction ML indisponible (erreur de communication avec le serveur).</p>';
+    return;
+  }
+
+  // Rappel de limite : toujours affiche, texte fourni par l'API elle-meme
+  // (source unique de verite, meme mecanisme que le disclaimer nutrition)
+  // -- jamais reformule/omis cote frontend.
+  disclaimerEl.textContent = `⚠️ ${data.disclaimer}`;
+
+  if (!data.available) {
+    // Message EXPLICITE plutot que de masquer l'encart sans explication --
+    // c'est l'etat attendu pour la grande majorite des profils (seul
+    // user_id=9 a un historique exploitable a ce stade, voir
+    // data/ml/ML_DATA_PREP.md).
+    listEl.innerHTML = `<p class="placeholder">Non disponible pour ce profil — ${data.reason}</p>`;
+    return;
+  }
+
+  listEl.innerHTML = data.predictions
+    .map((p) => {
+      const zoneLabel = MUSCLE_LABELS_FR[p.muscle_group] || p.muscle_group;
+      return `
+        <div class="ml-prediction-row">
+          <div class="ml-prediction-info">
+            <span class="ml-prediction-zone" title="${zoneLabel}">${zoneLabel}</span>
+            <p class="ml-prediction-meta">Semaine du ${p.week_predicted_for} — basé sur les données du ${p.based_on_week} (modèle ${p.model_version})</p>
+          </div>
+          <span class="ml-prediction-value">${parseFloat(p.predicted_risk_score).toFixed(1)}</span>
+        </div>`;
+    })
+    .join("");
+}
+
 // --- Toggle reel / demo ---
 
 function applyModeToUI() {
@@ -788,6 +1013,8 @@ function applyModeToUI() {
   document.getElementById("history-panel").classList.toggle("hidden", isDemoMode);
   applySimulatorAvailability();
   applyLogSessionAvailability();
+  applyNutritionAvailability();
+  applyMlPredictionAvailability();
 
   clearZoneSelection();
   if (isDemoMode) {
@@ -867,10 +1094,15 @@ function renderOccupancyGrid(gyms) {
     const pct = Math.round(parseFloat(g.occupancy_rate) * 100);
     const color = OCCUPANCY_COLOR_BY_CATEGORY[g.charge_category] || COLOR_NO_DATA;
     card.classList.toggle("selected", g.gym_id === selectedGymId);
+    // Langage "gros chiffre + label discret" (coherent avec KPI/Nutrition) :
+    // le pourcentage d'occupation domine visuellement, couleur/lueur
+    // suivant TOUJOURS la categorie de charge (Faible/Moderee/Elevee) --
+    // jamais une couleur neutre deconnectee du sens.
     card.innerHTML = `
-      <h3>${g.gym_name}</h3>
-      <div class="gym-gauge-track"><div class="gym-gauge-fill" style="width:${pct}%;background:${color}"></div></div>
-      <p class="gym-occupancy-text">${g.current_occupancy} / ${g.capacity} personnes (${pct}%) — <span class="gym-charge-badge" style="color:${color}">${g.charge_category}</span></p>
+      <h3 title="${g.gym_name}">${g.gym_name}</h3>
+      <p class="hero-stat-value" style="color:${color}; text-shadow: 0 0 12px ${color};">${pct}<span class="hero-stat-unit">%</span></p>
+      <div class="gym-gauge-track"><div class="gym-gauge-fill" style="width:${pct}%;background:${color};box-shadow:0 0 8px ${color};"></div></div>
+      <p class="gym-occupancy-text">${g.current_occupancy} / ${g.capacity} personnes — <span class="gym-charge-badge" style="color:${color}">${g.charge_category}</span></p>
       <p class="gym-updated-at">Dernier message : ${new Date(g.last_message_timestamp).toLocaleTimeString("fr-FR")}</p>
     `;
   });
@@ -920,6 +1152,10 @@ async function loadBestSlot(gymId) {
 }
 
 function init() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+
   document.getElementById("user-select").addEventListener("change", onUserChange);
   document.getElementById("scenario-select").addEventListener("change", onScenarioChange);
   document.getElementById("demo-toggle").addEventListener("change", (e) => {
@@ -935,8 +1171,19 @@ function init() {
   document.getElementById("sim-submit").addEventListener("click", onSimSubmit);
   applySimulatorAvailability();
 
+  // Synchronise le title (boite FERMEE) des selects d'exercice sur l'option
+  // selectionnee -- attache UNE SEULE FOIS ici (pas dans
+  // loadSimulatorExercises/loadLogSessionExercises, repopulees a chaque
+  // changement d'utilisateur) pour ne jamais empiler des listeners
+  // dupliques sur le meme <select> reutilise.
+  document.getElementById("sim-exercise-select").addEventListener("change", (e) => updateSelectTitle(e.target));
+  document.getElementById("log-exercise-select").addEventListener("change", (e) => updateSelectTitle(e.target));
+
   document.getElementById("log-session-submit").addEventListener("click", onLogSessionSubmit);
   applyLogSessionAvailability();
+
+  applyNutritionAvailability();
+  applyMlPredictionAvailability();
 
   connectOccupancyStream();
 

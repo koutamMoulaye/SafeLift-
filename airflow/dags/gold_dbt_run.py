@@ -38,6 +38,13 @@ Dependance vis-a-vis de silver_transformation : declenchee automatiquement
 via TriggerDagRunOperator en fin de silver_transformation.py, meme mecanisme
 et meme justification que bronze_ingestion -> silver_transformation (les deux
 DAGs sont a declenchement manuel, un ExternalTaskSensor serait fragile ici).
+
+Declenche a son tour ml_scoring (Jalon 3, sous-etape 5/6) en fin de dbt_test,
+meme mecanisme -- le scoring ML bonus reste ainsi a jour avec chaque
+recalcul de Gold (y compris ceux declenches par une seance temps reel,
+Jalon 2 sous-etape 3/5), sans mecanisme de synchronisation supplementaire.
+Si dbt_test echoue, ml_scoring n'est PAS declenche (trigger_rule par defaut
+= all_success).
 """
 
 import os
@@ -45,6 +52,7 @@ from datetime import datetime
 
 from airflow.models import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 SPARK_JOBS_DIR = "/opt/airflow/spark_jobs"
 SPARK_MASTER_URL = "spark://spark-master:7077"
@@ -143,4 +151,9 @@ with DAG(
         env=TASK_ENV,
     )
 
-    load_silver_to_postgres >> dbt_seed >> dbt_run_staging >> fuzzy_match_exercises >> dbt_run >> dbt_test
+    trigger_ml_scoring = TriggerDagRunOperator(
+        task_id="trigger_ml_scoring",
+        trigger_dag_id="ml_scoring",
+    )
+
+    load_silver_to_postgres >> dbt_seed >> dbt_run_staging >> fuzzy_match_exercises >> dbt_run >> dbt_test >> trigger_ml_scoring

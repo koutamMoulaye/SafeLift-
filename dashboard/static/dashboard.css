@@ -1,4 +1,11 @@
-/* SafeLift Dashboard — theme sombre "app tracker" moderne.
+/* SafeLift Dashboard — theme sombre "holographique" (Jalon 3, sous-etape
+   6/6 puis passe de style suivante) : ambiance neon cyan/turquoise sur
+   fond sombre + langage de card epure "gros chiffre + label discret"
+   (dashboard SaaS moderne). Reste en SVG/CSS 2D pur -- l'effet
+   "futuriste" vient d'effets lumineux (filter:drop-shadow, degrades,
+   text-shadow) appliques a des elements 2D existants, JAMAIS d'un moteur
+   3D/particules (hors de portee et contraire a la consigne initiale du
+   projet : silhouette schematique, pas de rendu anatomique 3D).
    Vanilla CSS, pas de framework. Demo jury (pas d'optimisation mobile). */
 
 :root {
@@ -16,6 +23,16 @@
   --accent-orange: #ff9457;
   --accent-teal: #4fd1c5;
 
+  /* Accent "de marque" cyan/turquoise neon -- distinct du --accent-teal
+     plus doux deja utilise pour les boutons/highlights existants (non
+     modifie, pour ne rien casser visuellement d'existant) : reserve aux
+     touches holographiques ADDITIONNELLES de cette passe (nav active,
+     lueurs, grille de scan, bordures neutres) demandees explicitement
+     comme couleur de marque pour les elements neutres. */
+  --accent-cyan: #2fe0e8;
+  --accent-cyan-soft: rgba(47, 224, 232, 0.16);
+  --accent-cyan-glow: rgba(47, 224, 232, 0.5);
+
   /* Code couleur de risque (conserve depuis les iterations precedentes,
      tons legerement adaptes pour rester lisibles sur fond sombre) */
   --color-faible: #2ecc71;
@@ -29,15 +46,35 @@
 
 * { box-sizing: border-box; }
 
+/* Ambiance de fond tres subtile (2 lueurs radiales cyan/violet a tres
+   faible opacite, fixes, ne defilent pas avec le contenu) -- volontairement
+   discrete pour ne JAMAIS reduire le contraste du texte des cards, qui
+   restent sur un fond plein (--bg-card) au-dessus de cette ambiance. */
 body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(47, 224, 232, 0.07), transparent 60%),
+    radial-gradient(ellipse 700px 500px at 100% 20%, rgba(139, 124, 255, 0.05), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text-primary);
   line-height: 1.4;
 }
 
 .hidden { display: none !important; }
+
+/* Bandeau + header + navigation d'onglets : regroupes dans un seul wrapper
+   sticky (plutot que rendre chaque element sticky independamment avec des
+   offsets `top` calcules a la main) -- le selecteur d'utilisateur/toggle
+   demo sont des reglages GLOBAUX (pas propres a un onglet), ils doivent
+   rester visibles en permanence quel que soit le defilement de la page a
+   l'interieur d'un onglet. */
+.app-header-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
 
 .demo-banner {
   background: var(--color-modere);
@@ -45,9 +82,6 @@ body {
   font-weight: 600;
   text-align: center;
   padding: 10px;
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
 
 header {
@@ -59,6 +93,70 @@ header {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
+}
+
+/* --- Navigation par onglets (SPA-style, changement de vue en JS) --- */
+
+.tabs-nav {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0 32px;
+  overflow-x: auto;
+  /* Liseret lumineux tres discret sous la nav entiere -- pose la teinte
+     "holographique" cyan des le haut de la page sans surcharger. */
+  box-shadow: 0 1px 12px -4px var(--accent-cyan-soft);
+}
+
+.tab-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 14px 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease, text-shadow 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Onglet actif : liseret cyan neon avec lueur -- couleur de marque
+   holographique reservee a la navigation/aux elements neutres (distincte
+   de --accent-teal, deja utilise ailleurs pour les boutons/highlights). */
+.tab-btn.active {
+  color: var(--accent-cyan);
+  border-bottom-color: var(--accent-cyan);
+  text-shadow: 0 0 12px var(--accent-cyan-soft);
+}
+
+/* Un seul onglet visible a la fois -- masquer via CSS (display:none) plutot
+   que retirer les elements du DOM : les connexions/etats JS lies a un
+   panneau (ex. EventSource de l'affluence, ouverte une seule fois dans
+   init()) ne dependent d'AUCUN element DOM, elles continuent donc de vivre
+   et de mettre a jour le contenu meme quand leur panneau est masque
+   (verifie reellement, voir PROGRESS_JALON3.md sous-etape 6/6). */
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  animation: tab-fade-in 0.2s ease;
+}
+
+@keyframes tab-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 header h1 {
@@ -92,15 +190,20 @@ header h1 {
   color: var(--text-primary);
   font-size: 0.95rem;
   max-width: 340px;
+  /* Un <select> natif ne wrap jamais son texte et le tronque BRUTALEMENT
+     (sans "…") des que ca depasse -- text-overflow n'a qu'un effet partiel
+     et peu fiable sur l'etat FERME d'un select selon les navigateurs. Le
+     vrai correctif est cote JS (truncateForSelect() dans dashboard.js, qui
+     coupe le texte AVANT de l'inserer comme option + expose le texte
+     complet via title) -- cette regle CSS est un filet de securite
+     supplementaire, pas la solution principale. */
+  text-overflow: ellipsis;
 }
 
 main {
   max-width: 1200px;
   margin: 0 auto;
   padding: 28px 32px 48px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
 }
 
 h2 {
@@ -127,12 +230,17 @@ h2 {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-card), 0 0 20px -12px var(--kpi-accent, var(--accent-purple));
   padding: 18px 20px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   border-top: 3px solid var(--kpi-accent, var(--accent-purple));
+  /* min-width:0 : une card de grille CSS refuse par defaut de retrecir
+     sous la largeur intrinseque de son contenu (meme piege que les items
+     flex) -- sans ca, un nom d'exercice long dans .kpi-value forcerait la
+     card entiere a s'elargir au lieu de laisser l'ellipsis s'appliquer. */
+  min-width: 0;
 }
 
 .kpi-card .kpi-label {
@@ -142,14 +250,71 @@ h2 {
   letter-spacing: 0.04em;
 }
 
+/* Anti-debordement : un nom d'exercice long (ex. derniere seance) est
+   tronque proprement avec "…" plutot que de deborder de la card ou de la
+   faire grandir -- texte complet disponible au survol via l'attribut
+   title, positionne par dashboard.js. Langage "gros chiffre" (chiffre
+   principal en avant, contexte discret en dessous via .kpi-sub) --
+   text-shadow discret pour une legere lueur "neon" SANS flouter le
+   glyphe lui-meme (le texte reste 100% opaque au premier plan, seule
+   l'ombre portee est floutee derriere -- verifie que le contraste
+   texte/fond n'est jamais reduit par cet effet). */
 .kpi-card .kpi-value {
-  font-size: 1.6rem;
+  font-size: 1.75rem;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 12px var(--kpi-accent, var(--accent-purple));
 }
 
 .kpi-card .kpi-sub {
   font-size: 0.82rem;
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Langage "gros chiffre + label discret", partage entre onglets ---
+   Generalisation du pattern deja utilise par les cards KPI : un chiffre
+   principal en grande taille + couleur d'accent cyan (couleur de "marque"
+   neutre du dashboard, reservee aux elements sans code couleur de risque
+   propre), libelle contextuel discret au-dessus. Reutilise par les cards
+   Nutrition (TDEE/proteines) et Affluence (occupancy). Anti-debordement
+   deja integre (ellipsis) : un chiffre reste toujours court, mais garde
+   la meme discipline que le reste du dashboard par coherence. */
+.hero-stat-label {
+  margin: 0 0 2px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hero-stat-value {
+  margin: 0 0 10px;
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  text-shadow: 0 0 14px var(--accent-cyan-glow);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unite/contexte accolee au chiffre principal, volontairement plus petite
+   et discrete (pas de lueur, couleur muted) -- c'est ce qui permet au
+   NOMBRE seul de rester compact et de ne jamais deborder d'une card
+   etroite, l'unite pouvant elle passer a la ligne ou etre coupee sans
+   perte d'information critique (le chiffre reste toujours entierement
+   visible). */
+.hero-stat-unit {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-shadow: none;
 }
 
 /* Card jauge : contenu centre, pas d'empilement label/valeur classique */
@@ -175,7 +340,12 @@ h2 {
   stroke-linecap: round;
   transform: rotate(-90deg);
   transform-origin: 60px 60px;
-  transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;
+  transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease, filter 0.4s ease;
+  /* Anneau holographique : lueur dont la couleur suit TOUJOURS le trace
+     (vert/ambre/rouge/gris), injectee via --gauge-glow (dashboard.js,
+     renderGauge()) -- jamais une couleur neon deconnectee du sens du
+     score. */
+  filter: drop-shadow(0 0 6px var(--gauge-glow, transparent));
 }
 
 .gauge-number {
@@ -208,7 +378,20 @@ h2 {
   padding: 22px;
 }
 
-.bodymap-panel { text-align: center; }
+/* Carte corporelle : fond "grille de scan" holographique tres subtile
+   (grille cyan a tres faible opacite + leger degrade radial centre sur la
+   silhouette) -- purement decoratif en arriere-plan, jamais superpose au
+   texte (le panneau ne contient que le SVG + la legende, aucun texte
+   dense qui pourrait perdre en lisibilite a cause de la grille). */
+.bodymap-panel {
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background-image:
+    radial-gradient(ellipse 260px 380px at 50% 45%, var(--accent-cyan-soft), transparent 70%),
+    repeating-linear-gradient(0deg, rgba(47, 224, 232, 0.05) 0px, rgba(47, 224, 232, 0.05) 1px, transparent 1px, transparent 24px),
+    repeating-linear-gradient(90deg, rgba(47, 224, 232, 0.05) 0px, rgba(47, 224, 232, 0.05) 1px, transparent 1px, transparent 24px);
+}
 
 .side-panel {
   display: flex;
@@ -219,6 +402,7 @@ h2 {
 #silhouette {
   width: 100%;
   max-width: 280px;
+  position: relative;
 }
 
 /* --- Zones de la carte corporelle --- */
@@ -229,9 +413,14 @@ h2 {
   stroke-width: 1;
 }
 
-/* Lignes suggerant la sangle abdominale : purement decoratives (pas de
-   data-muscle, pas d'evenement de clic), au-dessus de la zone "abs" */
+/* Lignes suggerant la sangle abdominale (et, depuis cette passe, les
+   clavicules) : purement decoratives (pas de data-muscle, pas d'evenement
+   de clic). fill:none obligatoire pour les usages en <path> (contrairement
+   a <line>, un <path> meme ouvert a un remplissage SVG implicite par
+   defaut -- sans cette regle, les clavicules s'afficheraient comme des
+   blobs noirs pleins au lieu de simples traits). */
 .decorative-line {
+  fill: none;
   stroke: rgba(13, 17, 23, 0.35);
   stroke-width: 1.5;
   pointer-events: none;
@@ -243,11 +432,18 @@ h2 {
   stroke-width: 1;
 }
 
+/* Lueur holographique des zones actives : la couleur (--zone-glow-color)
+   est injectee par dashboard.js (colorZones()), TOUJOURS identique au
+   remplissage vert/ambre/rouge -- transparent sur les zones sans donnee
+   (jamais de halo gris qui suggererait a tort un etat actif). Definie ici
+   en base (etat "repos") ET recomposee dans :hover/.selected ci-dessous
+   (jamais ecrasee par eux, les deux effets s'additionnent). */
 .zone {
   fill: var(--color-no-data);
   stroke: none;
   cursor: pointer;
   transition: fill 0.2s ease, filter 0.2s ease;
+  filter: drop-shadow(0 0 5px var(--zone-glow-color, transparent));
 }
 
 .zone-soft {
@@ -257,11 +453,13 @@ h2 {
 }
 
 .zone:hover {
-  filter: brightness(1.2) drop-shadow(0 0 4px rgba(255, 255, 255, 0.4));
+  filter: brightness(1.2) drop-shadow(0 0 4px rgba(255, 255, 255, 0.4))
+    drop-shadow(0 0 6px var(--zone-glow-color, transparent));
 }
 
 .zone.selected {
-  filter: brightness(1.25) drop-shadow(0 0 6px rgba(255, 255, 255, 0.7));
+  filter: brightness(1.25) drop-shadow(0 0 6px rgba(255, 255, 255, 0.7))
+    drop-shadow(0 0 8px var(--zone-glow-color, transparent));
 }
 
 .zone-outline {
@@ -307,15 +505,25 @@ h2 {
 
 .sensitive-zone-row:last-child { border-bottom: none; }
 
+/* Anti-debordement : nom de zone tronque avec "…" dans sa colonne fixe de
+   140px plutot que de deborder sur .zone-reason -- min-width:0 necessaire
+   car un item flex refuse par defaut de retrecir sous la largeur de son
+   texte, ce qui desactiverait silencieusement l'ellipsis. Texte complet
+   au survol via l'attribut title (dashboard.js). */
 .sensitive-zone-row .zone-name {
   font-weight: 600;
   flex: 0 0 140px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sensitive-zone-row .zone-reason {
   color: var(--text-muted);
   font-size: 0.85rem;
   flex: 1 1 auto;
+  min-width: 0;
 }
 
 .level-badge {
@@ -330,14 +538,28 @@ h2 {
 
 /* --- Detail d'une zone (au clic) --- */
 
-.zone-detail .score-badge {
+/* Langage "gros chiffre + label discret" : le score domine visuellement,
+   la pastille de niveau reste un simple repere secondaire a cote. */
+.zone-detail .score-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 6px 0 16px;
+}
+
+.zone-detail .score-hero-value {
+  font-size: 2.4rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.zone-detail .score-hero-level {
   display: inline-block;
-  padding: 4px 12px;
-  border-radius: 14px;
+  padding: 3px 12px;
+  border-radius: 999px;
   color: #0d1117;
   font-weight: 700;
-  font-size: 0.95rem;
-  margin: 4px 0 14px;
+  font-size: 0.8rem;
 }
 
 .factor-bars {
@@ -444,6 +666,14 @@ h2 {
   font-size: 0.9rem;
 }
 
+/* Meme filet de securite CSS que .controls select ci-dessus -- le vrai
+   correctif contre le decoupage brutal du texte reste la troncature JS
+   (truncateForSelect() dans dashboard.js), qui s'applique aux selects
+   d'exercice (souvent des libelles longs : nom + zone musculaire). */
+.simulator-form select {
+  text-overflow: ellipsis;
+}
+
 .btn-primary {
   margin-top: 16px;
   padding: 10px 18px;
@@ -454,11 +684,12 @@ h2 {
   font-weight: 700;
   font-size: 0.95rem;
   cursor: pointer;
-  transition: filter 0.2s ease;
+  transition: filter 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn-primary:hover {
   filter: brightness(1.1);
+  box-shadow: 0 0 16px -4px var(--accent-teal);
 }
 
 .sim-result {
@@ -495,7 +726,11 @@ h2 {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   padding: 22px;
-  margin-top: 20px;
+  /* PAS de margin-top ici : l'espacement entre panneaux d'un meme onglet
+     est deja gere uniformement par `.tab-panel.active { gap: 24px }`
+     (harmonisation des espacements, cf. PROGRESS_JALON3.md) -- une
+     margin-top supplementaire doublerait l'ecart par rapport aux autres
+     panneaux (incoherence constatee avant cette passe). */
 }
 
 #log-session-form-wrapper {
@@ -549,7 +784,7 @@ h2 {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   padding: 22px;
-  margin-top: 20px;
+  /* PAS de margin-top : voir le commentaire equivalent sur .log-session-panel. */
 }
 
 .occupancy-header {
@@ -603,21 +838,35 @@ h2 {
   border-radius: 10px;
   padding: 14px 16px;
   cursor: pointer;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  min-width: 0; /* item de grille : autorise le retrecissement sous la largeur du contenu (voir .kpi-card) */
 }
 
+/* Survol/selection : couleur de marque cyan (element neutre de navigation,
+   pas un code couleur de risque) avec une legere lueur. */
 .gym-card:hover {
-  border-color: var(--accent-teal);
+  border-color: var(--accent-cyan);
 }
 
 .gym-card.selected {
-  border-color: var(--accent-teal);
-  box-shadow: 0 0 0 1px var(--accent-teal);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 1px var(--accent-cyan), 0 0 16px -6px var(--accent-cyan);
 }
 
 .gym-card h3 {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Le pourcentage d'occupation reutilise .hero-stat-value (chiffre
+   principal, couleur/lueur fixees dynamiquement par dashboard.js selon la
+   categorie de charge) -- marge reduite ici car suivi immediatement de la
+   jauge, pas d'un libelle. */
+.gym-card .hero-stat-value {
+  margin-bottom: 8px;
 }
 
 .gym-card-meta {
@@ -673,4 +922,274 @@ h2 {
   font-size: 0.78rem;
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* --- Nutrition (Jalon 3, sous-etape 2/6) --- */
+
+.nutrition-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px;
+  /* PAS de margin-top : voir le commentaire equivalent sur .log-session-panel. */
+}
+
+/* Avertissement ethique : TOUJOURS visible des l'affichage de la section
+   (jamais cache dans un tooltip/lien) -- meme esprit visuel que
+   .demo-banner (fond ambre, texte fonce, impossible a manquer), mais un
+   style distinct pour ne pas confondre les deux avertissements (mode demo
+   vs limite du calcul nutritionnel). Place en TOUT PREMIER dans la
+   section, avant les chiffres eux-memes. */
+.nutrition-disclaimer {
+  background: var(--color-modere);
+  color: #2a1c00;
+  font-weight: 600;
+  font-size: 0.88rem;
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin: 8px 0 18px;
+}
+
+.nutrition-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.nutrition-card {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  border-top: 3px solid var(--accent-cyan);
+  box-shadow: 0 0 20px -12px var(--accent-cyan);
+  min-width: 0; /* item de grille : autorise le retrecissement sous la largeur du contenu (voir .kpi-card) */
+}
+
+.nutrition-card h3 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+}
+
+.nutrition-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+}
+
+/* Rangee "secondaire" (ex. BMR) affichee SOUS le gros chiffre hero (TDEE)
+   -- separateur discret pour marquer la hierarchie visuelle chiffre
+   principal > contexte. */
+.nutrition-stat-row.nutrition-stat-secondary {
+  margin: 6px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.nutrition-stat-label {
+  color: var(--text-muted);
+}
+
+.nutrition-stat-value {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.nutrition-gauge-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.nutrition-gauge-fill {
+  height: 100%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 10px var(--accent-cyan-glow);
+  transition: width 0.6s ease;
+}
+
+.nutrition-meta {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.nutrition-foods {
+  margin-top: 18px;
+}
+
+.nutrition-foods h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+
+.nutrition-food-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.nutrition-food-item {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 0; /* item de grille : autorise le retrecissement sous la largeur du contenu (voir .kpi-card) */
+}
+
+/* Anti-debordement : certains noms d'aliments USDA sont longs (ex.
+   "Beans, black, mature seeds, raw") -- tronques avec "…", texte complet
+   au survol via l'attribut title (dashboard.js). */
+.nutrition-food-name {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nutrition-food-macros {
+  display: block;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+/* --- Tendance prédictive (bonus ML, Jalon 3 sous-etape 5/6) ---
+   DECISION DEJA ACTEE : encart visuellement DISTINCT du risk_score
+   déterministe (silhouette/jauge/zones sensibles) -- bordure en pointillé
+   violet (accent-purple, pas les couleurs de risque Faible/Modere/Eleve,
+   pour ne jamais laisser croire que ce badge est un niveau de risque) +
+   badge "EXPÉRIMENTAL" toujours visible, jamais juste un ton légèrement
+   différent facile à manquer.
+
+   ⚠️ BUG REEL trouve et corrige pendant cette passe de style : le selecteur
+   partage `.bodymap-panel, .side-panel > div` (specificite (0,1,1) : 1
+   classe + 1 element) a TOUJOURS ete plus specifique que `.ml-prediction-
+   panel` seul (specificite (0,1,0)) -- ce panneau etant un `div` ENFANT
+   DIRECT de `.side-panel`, il correspond aux DEUX selecteurs, et en CSS
+   c'est la specificite qui tranche, jamais l'ordre d'apparition dans la
+   feuille de style quand les specificites different. Consequence : le
+   fond/bordure/ombre par defaut (`.bodymap-panel, .side-panel > div`)
+   ecrasait SILENCIEUSEMENT la bordure pointillee violette et l'ombre
+   portee de `.ml-prediction-panel` -- ce panneau n'a donc JAMAIS
+   reellement affiche son style distinctif depuis sa creation (sous-etape
+   5/6), un defaut jamais detecte faute de verification visuelle reelle
+   dans un navigateur (extension Chrome indisponible sur tout le projet).
+   Corrige en utilisant le selecteur ID (`#ml-prediction-panel`, deja
+   present dans le HTML pour les besoins JS), qui gagne face a n'importe
+   quelle combinaison de classes. */
+#ml-prediction-panel.ml-prediction-panel {
+  background: var(--bg-card);
+  border: 2px dashed var(--accent-purple);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card), 0 0 24px -14px var(--accent-purple);
+  padding: 22px;
+}
+
+.ml-prediction-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ml-prediction-header h2 {
+  margin: 0;
+}
+
+.experimental-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(139, 124, 255, 0.15);
+  border: 1px solid var(--accent-purple);
+  color: var(--accent-purple);
+  white-space: nowrap;
+}
+
+/* Rappel de limite : TOUJOURS visible dès l'affichage de l'encart, même
+   esprit que .nutrition-disclaimer (jamais caché dans un tooltip/lien),
+   mais teinte violette dédiée pour rester cohérente avec la bordure
+   pointillée -- ne pas confondre avec les autres avertissements (mode
+   démo en ambre, avertissement nutrition en ambre). */
+.ml-prediction-disclaimer {
+  background: rgba(139, 124, 255, 0.12);
+  border: 1px solid var(--accent-purple);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin: 12px 0 14px;
+}
+
+.ml-prediction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ml-prediction-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+}
+
+/* Colonne gauche (zone + meta) : min-width:0 necessaire pour qu'elle
+   accepte de retrecir sous sa largeur de contenu (sinon elle pousserait
+   .ml-prediction-value hors de la card au lieu de laisser l'ellipsis du
+   nom de zone s'appliquer -- meme piege flexbox que .zone-name). */
+.ml-prediction-info {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ml-prediction-zone {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ml-prediction-value {
+  color: var(--accent-purple);
+  font-weight: 800;
+  font-size: 1.3rem;
+  text-shadow: 0 0 12px rgba(139, 124, 255, 0.5);
+  flex: 0 0 auto;
+}
+
+/* Nom de modele + dates : phrase complete, autorisee a revenir a la ligne
+   proprement (pas de nowrap) plutot que d'etre tronquee -- assez de place
+   verticale disponible dans la card pour 2 lignes sans casser la mise en
+   page. */
+.ml-prediction-meta {
+  margin: 4px 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.ml-prediction-unreliable {
+  color: var(--color-modere);
 }

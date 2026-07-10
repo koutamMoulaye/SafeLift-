@@ -26,3 +26,11 @@ pyarrow==18.1.0
 # psycopg2-binary est deja fourni par apache-airflow-providers-postgres
 # (bundle par defaut de l'image apache/airflow), pas besoin de le repeter ici.
 rapidfuzz==3.10.1
+
+# Entrainement/evaluation du modele ML bonus (Jalon 3, sous-etape 4/6 --
+# scripts/train_risk_trend_model.py). scikit-learn embarque deja joblib en
+# dependance transitive (utilise pour serialiser data/ml/model.pkl), pas
+# besoin de l'epingler separement. numpy/scipy sont resolus automatiquement
+# par pip a des versions compatibles avec pandas==2.1.4 deja installe
+# ci-dessus.
+scikit-learn==1.5.2

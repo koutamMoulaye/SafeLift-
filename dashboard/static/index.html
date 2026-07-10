@@ -7,32 +7,55 @@
 </head>
 <body>
 
-<!-- Bandeau mode demo : masque par defaut, affiche par JS quand le toggle est actif -->
-<div id="demo-banner" class="demo-banner hidden">
-  ⚠️ DONNÉES DE DÉMONSTRATION — scénarios fictifs à but illustratif, jamais mélangés aux vraies données
+<!-- Bandeau + header + navigation d'onglets regroupes dans UN wrapper
+     sticky : le selecteur d'utilisateur et le toggle demo (reglages
+     GLOBAUX, pas propres a un onglet) restent visibles en permanence quel
+     que soit l'onglet actif et le defilement de la page. -->
+<div class="app-header-sticky">
+  <!-- Bandeau mode demo : masque par defaut, affiche par JS quand le toggle est actif -->
+  <div id="demo-banner" class="demo-banner hidden">
+    ⚠️ DONNÉES DE DÉMONSTRATION — scénarios fictifs à but illustratif, jamais mélangés aux vraies données
+  </div>
+
+  <header>
+    <h1>SafeLift</h1>
+    <div class="controls">
+      <label class="toggle-label">
+        <input type="checkbox" id="demo-toggle">
+        Données de démonstration
+      </label>
+
+      <div id="real-controls">
+        <label for="user-select">Utilisateur :</label>
+        <select id="user-select"></select>
+      </div>
+
+      <div id="demo-controls" class="hidden">
+        <label for="scenario-select">Scénario :</label>
+        <select id="scenario-select"></select>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation par onglets (SPA-style, changement de vue en JS,
+       AUCUN rechargement de page ni route serveur separee) : necessaire
+       pour preserver la connexion SSE de l'affluence meme hors de son
+       onglet (elle vit en JS, independante du DOM affiche/masque) et
+       eviter tout temps de chargement pendant une demo live. -->
+  <nav class="tabs-nav" id="tabs-nav">
+    <button type="button" class="tab-btn active" data-tab="risk">Risque &amp; Entraînement</button>
+    <button type="button" class="tab-btn" data-tab="occupancy">Affluence</button>
+    <button type="button" class="tab-btn" data-tab="nutrition">Nutrition</button>
+  </nav>
 </div>
 
-<header>
-  <h1>SafeLift</h1>
-  <div class="controls">
-    <label class="toggle-label">
-      <input type="checkbox" id="demo-toggle">
-      Données de démonstration
-    </label>
-
-    <div id="real-controls">
-      <label for="user-select">Utilisateur :</label>
-      <select id="user-select"></select>
-    </div>
-
-    <div id="demo-controls" class="hidden">
-      <label for="scenario-select">Scénario :</label>
-      <select id="scenario-select"></select>
-    </div>
-  </div>
-</header>
-
 <main>
+
+<!-- Onglet "Risque & Entraînement" : silhouette + risque, KPIs, zones
+     sensibles, simulateur what-if, logger une seance, tendance predictive
+     ML -- tout ce qui est directement lie au risque musculo-squelettique
+     de l'utilisateur. -->
+<div class="tab-panel active" data-tab-panel="risk">
   <!-- Rangee de cards KPI : vue d'ensemble en un coup d'oeil -->
   <section class="kpi-row">
     <div class="kpi-card" style="--kpi-accent: var(--accent-purple)">
@@ -96,9 +119,21 @@
           C130,63 110,63 104,58
           Z" />
 
+        <!-- Clavicules : purement decoratives (detail anatomique
+             supplementaire, non cliquable) -->
+        <path class="decorative-line" d="M110,60 C104,62 98,64 94,68" />
+        <path class="decorative-line" d="M130,60 C136,62 142,64 146,68" />
+
         <!-- Haut du dos (schema, zone dorsale en pointille fin) -->
         <circle cx="92" cy="76" r="9" class="zone zone-outline" data-muscle="back" />
         <circle cx="148" cy="76" r="9" class="zone zone-outline" data-muscle="back" />
+
+        <!-- Trapezes : zone musculaire supplementaire (mappee sur "shoulder",
+             meme muscle_group que les deltoides -- aucune nouvelle donnee
+             necessaire) pour une silhouette plus detaillee au niveau de la
+             jonction cou/epaules. -->
+        <path class="zone zone-soft" data-muscle="shoulder" d="M107,58 C100,62 94,68 92,78 C97,76 104,71 111,65 C110,62 109,60 107,58 Z" />
+        <path class="zone zone-soft" data-muscle="shoulder" d="M133,58 C140,62 146,68 148,78 C143,76 136,71 129,65 C130,62 131,60 133,58 Z" />
 
         <!-- Deltoides / epaules -->
         <ellipse cx="76" cy="90" rx="24" ry="19" class="zone zone-soft" data-muscle="shoulder" />
@@ -195,6 +230,32 @@
         <svg id="history-chart" viewBox="0 0 400 150" xmlns="http://www.w3.org/2000/svg"></svg>
         <p id="history-empty" class="placeholder">Sélectionnez un utilisateur réel pour voir son historique.</p>
       </div>
+
+      <!-- Tendance prédictive (bonus ML, Jalon 3 sous-etape 5/6) : encart
+           VOLONTAIREMENT DISTINCT du risk_score déterministe ci-dessus
+           (bordure/style dédiés, badge "EXPÉRIMENTAL") -- jamais fusionné
+           visuellement, toujours accompagné d'un rappel de ses limites
+           (voir data/ml/ML_TRAINING_RESULTS.md). Disponible uniquement pour
+           les (user_id, muscle_group) déjà présents dans
+           gold.ml_risk_prediction (concrètement : un seul utilisateur à ce
+           stade) -- message explicite "non disponible" sinon, jamais
+           masqué sans explication. Désactivé en mode démo (mêmes raisons
+           que le simulateur what-if : pas d'user_id réel à associer). -->
+      <div class="ml-prediction-panel" id="ml-prediction-panel">
+        <div class="ml-prediction-header">
+          <h2>Tendance prédictive</h2>
+          <span class="experimental-badge">EXPÉRIMENTAL</span>
+        </div>
+
+        <div id="ml-prediction-unavailable" class="hidden">
+          <p class="placeholder">Cette section nécessite un utilisateur réel — désactivez le mode démonstration pour l'utiliser.</p>
+        </div>
+
+        <div id="ml-prediction-content">
+          <p class="ml-prediction-disclaimer" id="ml-prediction-disclaimer"></p>
+          <div id="ml-prediction-list"><p class="placeholder">Chargement…</p></div>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -275,15 +336,85 @@
       <p id="log-session-status" class="log-session-status"></p>
     </div>
   </section>
+</div>
 
-  <!-- Affluence en direct (Jalon 2, sous-etape 4/5) : Server-Sent Events
-       (PAS de WebSocket, PAS de polling -- decision deja actee), independant
-       du selecteur utilisateur/mode demo ci-dessus (les salles de dim_gym
-       n'ont aucun lien avec les utilisateurs gym_members). Voir
-       dashboard.js pour la connexion EventSource et
-       data/gold/GOLD_MODEL_DECISIONS.md section 12 pour la recommandation
-       de creneau (limitation assumee : pattern theorique du simulateur,
-       pas un historique reel observe). -->
+<!-- Onglet "Nutrition" : TDEE/BMR, jauge proteique, aliments suggeres.
+     (Place ici physiquement dans le DOM avant l'onglet "Affluence" --
+     l'ordre de navigation reel est defini par tabs-nav ci-dessus
+     (Risque -> Affluence -> Nutrition), pas par l'ordre du DOM : le
+     changement d'onglet est purement pilote par les classes CSS/JS, l'ordre
+     des panneaux d'onglet dans le fichier n'a aucune importance.) -->
+<div class="tab-panel" data-tab-panel="nutrition">
+  <!-- Nutrition (Jalon 3, sous-etape 2/6) : lecture directe de
+       gold.fact_nutrition_target / gold.dim_nutrition (deja calculees par
+       dbt via airflow/dags/nutrition_ingestion.py, sous-etape 1/6) --
+       AUCUN recalcul cote frontend/API. Disponible pour TOUT utilisateur
+       reel de dim_user (973 profils), contrairement aux donnees de risque
+       (un seul "demo user" a de vraies seances). Desactive en mode demo
+       (memes raisons que le simulateur what-if/logger seance : pas de
+       user_id reel a associer aux scenarios synthetiques).
+       AVERTISSEMENT ETHIQUE TOUJOURS VISIBLE des l'affichage de la
+       section, jamais cache dans un tooltip/lien -- contrainte explicite
+       non negociable de cette sous-etape. -->
+  <section class="nutrition-panel" id="nutrition-panel">
+    <h2>Nutrition</h2>
+
+    <div id="nutrition-unavailable" class="hidden">
+      <p class="placeholder">Cette section nécessite un utilisateur réel — désactivez le mode démonstration pour l'utiliser.</p>
+    </div>
+
+    <div id="nutrition-content">
+      <p class="nutrition-disclaimer" id="nutrition-disclaimer"></p>
+
+      <!-- Langage "gros chiffre + label discret" (coherent avec les cards
+           KPI de l'onglet Risque) : le chiffre principal (TDEE / besoin
+           proteique) domine visuellement, le contexte (BMR, facteur
+           d'activite) reste discret en dessous. AUCUN changement d'id --
+           dashboard.js (loadNutrition) continue de cibler exactement les
+           memes elements via getElementById, seule la structure/le style
+           visuel changent. -->
+      <div class="nutrition-grid">
+        <div class="nutrition-card">
+          <h3>Dépense énergétique estimée</h3>
+          <p class="hero-stat-label">TDEE (dépense totale estimée)</p>
+          <p class="hero-stat-value" id="nutrition-tdee">—</p>
+          <div class="nutrition-stat-row nutrition-stat-secondary">
+            <span class="nutrition-stat-label">BMR (métabolisme de base)</span>
+            <span class="nutrition-stat-value" id="nutrition-bmr">—</span>
+          </div>
+          <p class="nutrition-meta" id="nutrition-activity-meta"></p>
+        </div>
+
+        <div class="nutrition-card">
+          <h3>Besoin protéique cible</h3>
+          <p class="hero-stat-value" id="nutrition-protein-value">—</p>
+          <div class="nutrition-gauge-track"><div class="nutrition-gauge-fill" id="nutrition-protein-gauge"></div></div>
+          <p class="nutrition-meta" id="nutrition-protein-meta"></p>
+        </div>
+      </div>
+
+      <div class="nutrition-foods">
+        <h3>Aliments suggérés (riches en protéines, catalogue USDA)</h3>
+        <ul class="nutrition-food-list" id="nutrition-food-list"></ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- Onglet "Affluence" en direct (Jalon 2, sous-etape 4/5) : Server-Sent
+     Events (PAS de WebSocket, PAS de polling -- decision deja actee),
+     independant du selecteur utilisateur/mode demo (les salles de dim_gym
+     n'ont aucun lien avec les utilisateurs gym_members). La connexion
+     EventSource est ouverte UNE SEULE FOIS dans dashboard.js (init()),
+     independamment de l'onglet actif -- masquer ce panneau via CSS
+     (display:none sur le tab-panel INACTIF) NE FERME PAS la connexion,
+     elle continue de recevoir des evenements et de mettre a jour le DOM en
+     arriere-plan (verifie reellement, voir PROGRESS_JALON3.md). Voir
+     dashboard.js pour la connexion EventSource et
+     data/gold/GOLD_MODEL_DECISIONS.md section 12 pour la recommandation
+     de creneau (limitation assumee : pattern theorique du simulateur,
+     pas un historique reel observe). -->
+<div class="tab-panel" data-tab-panel="occupancy">
   <section class="occupancy-panel" id="occupancy-panel">
     <div class="occupancy-header">
       <h2>Affluence en direct</h2>
@@ -299,6 +430,7 @@
       <p class="placeholder">Sélectionnez une salle pour voir la recommandation de créneau.</p>
     </div>
   </section>
+</div>
 </main>
 
 <script src="/static/dashboard.js"></script>

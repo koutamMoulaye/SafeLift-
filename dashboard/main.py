@@ -215,6 +215,106 @@ def get_user_risk_history(user_id: int) -> dict:
     return {"user_id": user_id, "history": history, "is_synthetic_demo": False}
 
 
+# Rappel affiche EN PERMANENCE aux cotes de toute prediction ML (jamais
+# optionnel, meme raisonnement/mecanisme que NUTRITION_DISCLAIMER plus bas :
+# une seule source de verite pour ce texte, le frontend l'affiche tel quel
+# sans jamais le reformuler ou l'omettre). DECISION DEJA ACTEE (Jalon 3,
+# sous-etape 5/6) : cette prediction reste TOUJOURS visuellement/
+# semantiquement DISTINCTE de gold.fact_risk_score (formule deterministe) --
+# jamais fusionnee, jamais presentee comme plus fiable.
+ML_PREDICTION_DISCLAIMER = (
+    "Prédiction EXPÉRIMENTALE (bonus ML, hors périmètre de certification) — "
+    "modèle entraîné sur l'historique d'un seul utilisateur, à but exploratoire. "
+    "Ne remplace pas le risk_score déterministe ci-dessus, qui reste la seule "
+    "source de vérité du dashboard."
+)
+
+
+@app.get("/users/{user_id}/risk/prediction")
+def get_user_risk_prediction(user_id: int) -> dict:
+    """Prediction ML (bonus, Jalon 3 sous-etape 5/6) du risk_score de la
+    semaine suivante par zone musculaire, si disponible pour cet utilisateur.
+
+    Lecture directe de gold.ml_risk_prediction (deja calculee par
+    scripts/score_risk_trend.py, orchestre par le DAG ml_scoring declenche
+    apres chaque gold_dbt_run) -- AUCUN calcul ici, meme principe que les
+    autres endpoints de lecture de ce fichier.
+
+    Statut explicite plutot qu'une erreur : la GRANDE MAJORITE des
+    utilisateurs (972/973) n'a AUCUNE prediction disponible (aucun
+    historique fact_risk_score exploitable pour entrainer/scorer un modele,
+    voir data/gold/GOLD_MODEL_DECISIONS.md section 5 et
+    data/ml/ML_DATA_PREP.md) -- ce n'est PAS une erreur serveur, c'est un
+    etat attendu et frequent. Deux cas distincts geres explicitement :
+    (1) la table gold.ml_risk_prediction n'existe pas encore (le DAG
+    ml_scoring n'a jamais tourne) ; (2) la table existe mais ne contient
+    aucune ligne pour cet utilisateur precis (pas assez d'historique).
+    Dans les deux cas : available=false + un message clair, jamais un 500.
+    """
+    with get_cursor() as cur:
+        cur.execute("select 1 from gold.dim_user where user_id = %s", (user_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail=f"user_id {user_id} introuvable")
+
+        cur.execute("select to_regclass('gold.ml_risk_prediction') as tbl")
+        table_exists = cur.fetchone()["tbl"] is not None
+
+        if not table_exists:
+            return {
+                "user_id": user_id,
+                "available": False,
+                "predictions": [],
+                "reason": (
+                    "Le DAG de scoring ML (ml_scoring) n'a pas encore été exécuté — "
+                    "aucune prédiction n'a jamais été calculée."
+                ),
+                "disclaimer": ML_PREDICTION_DISCLAIMER,
+            }
+
+        cur.execute(
+            """
+            select
+                muscle_group,
+                week_predicted_for,
+                predicted_risk_score,
+                based_on_week,
+                model_version,
+                model_trained_at,
+                scored_at
+            from gold.ml_risk_prediction
+            where user_id = %s
+            order by muscle_group
+            """,
+            (user_id,),
+        )
+        predictions = cur.fetchall()
+
+    if not predictions:
+        return {
+            "user_id": user_id,
+            "available": False,
+            "predictions": [],
+            "reason": (
+                "Pas assez d'historique réel pour ce profil — la prédiction ML nécessite "
+                "un historique de risk_score déjà calculé pour cet utilisateur "
+                "(voir data/ml/ML_DATA_PREP.md)."
+            ),
+            "disclaimer": ML_PREDICTION_DISCLAIMER,
+        }
+
+    for prediction in predictions:
+        prediction["muscle_zone"] = MUSCLE_LABELS_FR.get(
+            prediction["muscle_group"], prediction["muscle_group"]
+        )
+
+    return {
+        "user_id": user_id,
+        "available": True,
+        "predictions": predictions,
+        "disclaimer": ML_PREDICTION_DISCLAIMER,
+    }
+
+
 @app.get("/demo/scenarios")
 def list_demo_scenarios() -> list[dict]:
     """Les 9 scenarios synthetiques (3 par seuil Faible/Modere/Eleve).
@@ -752,4 +852,107 @@ def get_gym_best_slot(gym_id: int) -> dict:
             "statistiquement valable. Limitation temporaire assumée, voir "
             "data/gold/GOLD_MODEL_DECISIONS.md section 12."
         ),
+    }
+
+
+# =============================================================================
+# Nutrition (Jalon 3, sous-etape 2/6)
+#
+# Lit gold.fact_nutrition_target / gold.dim_nutrition (peuplees par
+# airflow/dags/nutrition_ingestion.py, Jalon 3 sous-etape 1/6). AUCUN
+# recalcul cote API -- les valeurs sont deja calculees par dbt (formule
+# Mifflin-St Jeor + facteur d'activite + besoin proteique cible, voir
+# data/gold/GOLD_MODEL_DECISIONS.md section 13), l'API se contente de les
+# lire et de les exposer.
+# =============================================================================
+
+# Nombre d'aliments suggeres retournes -- borne haute de la fourchette
+# demandee (5-8), pour laisser un peu de variete a afficher sans surcharger
+# la carte du dashboard.
+SUGGESTED_FOODS_LIMIT = 8
+
+# Rappel ethique -- IDENTIQUE en substance au rappel deja pose dans
+# data/gold/GOLD_MODEL_DECISIONS.md section 13/PROGRESS_JALON3.md, renvoye
+# ici tel quel par l'API pour que le frontend n'ait JAMAIS a le reformuler
+# ou a l'omettre par erreur -- une seule source de verite pour ce texte,
+# affichee en permanence par la section Nutrition du dashboard (jamais
+# cachee dans un tooltip/lien, cf. dashboard.js).
+NUTRITION_DISCLAIMER = (
+    "Ces chiffres (TDEE, BMR, besoin protéique) sont des ESTIMATIONS génériques "
+    "calculées avec une formule standard (Mifflin-St Jeor + facteur d'activité), "
+    "appliquée automatiquement à partir du profil — CE N'EST PAS une recommandation "
+    "médicale ou nutritionnelle personnalisée. SafeLift ne remplace ni un coach "
+    "sportif, ni un médecin, ni un diététicien."
+)
+
+
+@app.get("/users/{user_id}/nutrition")
+def get_user_nutrition(user_id: int) -> dict:
+    """Cibles nutritionnelles (TDEE/BMR/proteines) + aliments suggeres pour un utilisateur.
+
+    Aucun calcul ici : lecture directe de gold.fact_nutrition_target (1
+    ligne par utilisateur, deja calculee par dbt) et de gold.dim_nutrition
+    (catalogue USDA, 119 aliments). "Aliments suggeres" = les
+    SUGGESTED_FOODS_LIMIT aliments les plus riches en proteines pour 100g
+    (`protein_g_per_100g` desc) -- pertinent pour un contexte
+    fitness/musculation, coherent avec le reste du projet.
+
+    Le champ `disclaimer` est TOUJOURS present dans la reponse (jamais
+    optionnel) : le frontend doit l'afficher en permanence des l'affichage
+    de la section, pas seulement au clic sur un "en savoir plus" --
+    contrainte explicite de cette sous-etape.
+    """
+    with get_cursor() as cur:
+        cur.execute("select 1 from gold.dim_user where user_id = %s", (user_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail=f"user_id {user_id} introuvable")
+
+        cur.execute(
+            """
+            select
+                bmr_kcal,
+                tdee_kcal,
+                activity_factor,
+                protein_g_per_kg_target,
+                protein_target_g_per_day,
+                body_weight_kg,
+                workout_frequency_days_per_week
+            from gold.fact_nutrition_target
+            where user_id = %s
+            """,
+            (user_id,),
+        )
+        target = cur.fetchone()
+        if target is None:
+            # Ne devrait jamais arriver (fact_nutrition_target couvre les
+            # 973 utilisateurs de dim_user, teste en sous-etape 1/6) --
+            # 404 explicite plutot qu'une reponse partielle si jamais ce
+            # n'etait plus le cas.
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucune cible nutritionnelle calculee pour user_id {user_id}.",
+            )
+
+        cur.execute(
+            """
+            select fdc_id, food_name, food_category, kcal_per_100g, protein_g_per_100g, carbs_g_per_100g, fat_g_per_100g
+            from gold.dim_nutrition
+            order by protein_g_per_100g desc
+            limit %s
+            """,
+            (SUGGESTED_FOODS_LIMIT,),
+        )
+        suggested_foods = cur.fetchall()
+
+    return {
+        "user_id": user_id,
+        "bmr_kcal": target["bmr_kcal"],
+        "tdee_kcal": target["tdee_kcal"],
+        "activity_factor": target["activity_factor"],
+        "protein_g_per_kg_target": target["protein_g_per_kg_target"],
+        "protein_target_g_per_day": target["protein_target_g_per_day"],
+        "body_weight_kg": target["body_weight_kg"],
+        "workout_frequency_days_per_week": target["workout_frequency_days_per_week"],
+        "suggested_foods": suggested_foods,
+        "disclaimer": NUTRITION_DISCLAIMER,
     }

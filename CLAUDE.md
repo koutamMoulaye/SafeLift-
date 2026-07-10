@@ -987,6 +987,416 @@ section 13 pour le detail complet. Resume des decisions structurantes :
   dans le sens attendu), verification arithmetique directe
   (`tdee_kcal / bmr_kcal` == `activity_factor` exact sur l'echantillon).
 
+### Jalon 3, sous-etape 2/6 — Dashboard nutrition (2026-07-09)
+
+Voir `PROGRESS_JALON3.md` pour le detail complet. Resume des decisions
+structurantes :
+
+- **`GET /users/{user_id}/nutrition` ne recalcule RIEN** : lecture directe
+  de `gold.fact_nutrition_target`/`gold.dim_nutrition` (deja calculees par
+  dbt en sous-etape 1/6) — meme principe que les autres endpoints de ce
+  fichier (`/users/{id}/risk`, `/gyms/occupancy/stream`), aucune logique
+  metier dupliquee cote API.
+- **Le champ `disclaimer` de la reponse API est la SOURCE UNIQUE DE
+  VERITE du texte d'avertissement** (`NUTRITION_DISCLAIMER`, constante
+  Python) — le frontend l'affiche tel quel, ne le reformule jamais. Evite
+  qu'une version differente/abregee soit ecrite par erreur cote JS.
+- **⚠️ Avertissement ethique = contrainte NON NEGOCIABLE de visibilite**,
+  traitee comme une contrainte dure : place en TOUT PREMIER element de la
+  section (avant les chiffres), AUCUNE classe `hidden`/regle CSS
+  `display:none` par defaut (verifie explicitement par lecture du code),
+  seul le toggle demo/reel (deja utilise pour masquer simulateur/logger
+  seance, memes raisons : pas d'`user_id` reel en mode demo) peut la
+  masquer — jamais un clic supplementaire de l'utilisateur.
+- **8 aliments suggeres = les plus riches en proteines** (`ORDER BY
+  protein_g_per_100g DESC LIMIT 8`) — choix simple et explicable,
+  coherent avec le contexte fitness/musculation du reste du projet (pas
+  un algorithme de recommandation personnalise).
+- **Section "Nutrition" desactivee en mode demo**, meme raisonnement deja
+  applique au simulateur what-if et au formulaire "Logger une seance" :
+  les scenarios synthetiques n'ont pas d'`user_id` reel a associer a une
+  cible nutritionnelle.
+- **Teste sur 3 profils reels distincts** (40kg/64.1kg/129.9kg -> TDEE
+  1711/2446/3271 kcal), memes chiffres exacts que la sous-etape 1/6
+  (confirme que l'API relit bien les valeurs dbt sans les alterer).
+  Verification VISUELLE (capture d'ecran) non effectuee (extension Chrome
+  indisponible sur cette session comme sur toutes les precedentes) —
+  documente comme limite, verification structurelle du DOM/CSS faite a la
+  place.
+
+### Jalon 3, sous-etape 3/6 — Preparation des donnees ML (2026-07-09)
+
+Voir `data/ml/ML_DATA_PREP.md` pour le detail complet (grain, features,
+chiffres reels, verification anti-fuite). Resume des decisions
+structurantes :
+
+- **Script Python standalone (`scripts/prepare_ml_features.py`), pas un
+  modele dbt** : sortie attendue = fichiers Parquet train/test (pas des
+  tables Postgres), split temporel = decision de consommation des donnees
+  (hors perimetre naturel de dbt), lags calendaires exacts plus simples a
+  exprimer/verifier en pandas pour ce volume de donnees. Coherent avec les
+  scripts standalone deja existants (`upload_gold_to_s3.py`,
+  `fuzzy_match_exercises.py`). Ne fait AUCUN calcul de risque : lit
+  uniquement `gold.fact_risk_score` (deja calculee par dbt en Jalon 1) et
+  agrege/decale dans le temps.
+- **Objectif ML deja tranche (non renegociable a cette sous-etape)** :
+  predire le `risk_score` de la SEMAINE SUIVANTE par (utilisateur, zone),
+  jamais reapprendre la formule deterministe actuelle de
+  `fact_risk_score.sql` — la cible est deliberement decalee d'une semaine
+  dans le futur pour eviter une fuite de donnees triviale (le modele ne
+  doit pas pouvoir se contenter de recopier une formule connue).
+- **Grain `(user_id, muscle_group, week_start_date)`, MEME colonne
+  `gold.dim_date.week_start_date` deja utilisee en interne par
+  `fact_risk_score.sql`** pour calculer `charge_factor`/`volume_factor` —
+  coherence garantie avec la definition de "semaine" deja actee. Aucune
+  semaine "a zero" inventee : le `GROUP BY` sur des lignes reellement
+  existantes garantit qu'une semaine sans seance ne produit simplement
+  aucune ligne.
+- **AUCUNE fuite temporelle par construction** : chaque
+  `lag_N_risk_score` recherche la valeur a la semaine calendaire EXACTE
+  (`week_start_date - N semaines`, lookup pandas `MultiIndex` exact),
+  `NULL` si cette semaine precise n'a aucune donnee — **jamais interpolee
+  ni remplacee par la derniere valeur observee plus loin dans le passe**
+  (inventerait une regularite hebdomadaire qui n'existe pas dans un
+  historique reel irregulier). Meme logique en sens inverse pour la
+  cible (`week_start_date + 1 semaine`).
+- **Verifie reellement, pas juste par relecture de code** : (1) aucun
+  chevauchement de dates entre train et test (`max(train) < min(test)`) ;
+  (2) verification manuelle d'une ligne (`arms`, semaine 2016-01-18)
+  contre une requete independante sur les donnees brutes, `lag_1` et
+  cible confirmes exacts ; (3) les 2 lignes orphelines a
+  `week_start_date=2026-07-06` (tests reels du formulaire "Logger une
+  seance", Jalon 2) confirmees `NULL` sur lag/cible et absentes de
+  train/test — exclues NATURELLEMENT par la logique de lookup exact, sans
+  filtre special-case ecrit pour ce cas.
+- **Split TEMPOREL (pas aleatoire)** sur les SEMAINES DISTINCTES du jeu
+  labelise (pas sur le nombre brut de lignes, deforme par des zones a
+  beaucoup plus de lignes que d'autres) : 20% des semaines les plus
+  recentes en test. Cutoff reel obtenu : `2018-03-19` (107 semaines
+  train / 27 semaines test, soit 491 lignes train / 161 lignes test).
+- **⚠️ Limite majeure, a rappeler explicitement a la prochaine sous-etape
+  (entrainement) : jeu de donnees MONO-UTILISATEUR** (`user_id=9`
+  uniquement a un historique `fact_risk_score` exploitable, les 972
+  autres profils `dim_user` n'ont aucune seance reelle rattachee — meme
+  contrainte deja documentee en Jalon 1, `GOLD_MODEL_DECISIONS.md`
+  section 5). Volume tres petit pour du ML (491/161 lignes, 8 zones tres
+  inegalement representees, `legs` = 18 lignes labelisees au total) —
+  honnetement quantifie et non minimise dans `ML_DATA_PREP.md`, comme
+  demande explicitement.
+- **Ecart de ~8 ans dans l'historique constate et documente, pas masque** :
+  historique reel ininterrompu 2015-10-19 -> 2018-09-24 (Kaggle
+  `weight_training`), puis 2 lignes isolees a 2026-07-06 issues de mes
+  propres tests reels du Jalon 2 (formulaire temps reel) — trop loin de
+  tout historique adjacent pour etre exploitables, transparentes dans
+  `weekly_features_full.parquet` mais absentes de train/test.
+- **`.gitignore` : `data/ml/*` ignore, exceptions `!data/ml/.gitkeep` et
+  `!data/ml/ML_DATA_PREP.md`** — meme pattern deja applique a
+  `data/bronze`/`data/silver`/`data/gold` (donnees generees non
+  versionnees, documentation versionnee).
+
+### Jalon 3, sous-etape 4/6 — Entrainement + evaluation du modele ML (2026-07-09)
+
+Voir `data/ml/ML_TRAINING_RESULTS.md` pour le detail complet (tableau
+comparatif, importances, conclusion). Resume des decisions structurantes :
+
+- **`scikit-learn==1.5.2` ajoute a `airflow/requirements.txt`, image
+  `safelift-airflow:local` reconstruite** (`docker compose build
+  airflow-init` — c'est ce service, pas `airflow-webserver`, qui possede
+  le `build:` du Dockerfile ; `airflow-webserver`/`airflow-scheduler`
+  referencent seulement l'image par tag, verifie apres une premiere
+  tentative de rebuild silencieusement no-op sur le mauvais service).
+  `joblib`/`scipy`/`threadpoolctl` installes en dependances transitives,
+  aucune version epinglee separement pour ceux-ci.
+- **UN SEUL modele poole sur les 8 zones** (`muscle_group` en one-hot),
+  **pas 8 modeles independants** — decision deja actee en sous-etape 3/6
+  (`ML_DATA_PREP.md` section 6) : `legs` (18 lignes labelisees au total)
+  et `unknown` (50, categorie fourre-tout du fuzzy matching, pas une
+  vraie zone anatomique) sont structurellement trop petits pour un
+  entrainement par zone.
+- **Imputation des NULL des lags par 0** (pas de suppression de lignes,
+  pas de moyenne du train) : documente dans `impute_lag_nulls()`, choix
+  neutre applique identiquement sur train et test — supprimer des lignes
+  aurait encore reduit un train deja a 491 lignes.
+- **Aucun hyperparametre cherche par validation croisee sur le test set**
+  (volume trop faible pour un split train/validation supplementaire
+  fiable) : `alpha=1.0` (Ridge), `max_depth=4`/`n_estimators=100`
+  (RandomForest) sont des valeurs par defaut raisonnables fixees AVANT
+  toute evaluation — le test set ne sert qu'a l'evaluation finale, jamais
+  a ajuster quoi que ce soit.
+- **Baseline naive obligatoire et jamais contournee** : predire
+  `risk_score_avg` (semaine courante) tel quel comme prediction de la
+  semaine suivante. RMSE baseline = **14.6866** vs Ridge **9.2689** vs
+  RandomForest **9.1152** (TEST set, 161 lignes) — **les deux modeles ML
+  battent nettement la baseline** (~37% de reduction RMSE), resultat
+  rapporte tel quel (le code aurait rapporte l'inverse a l'identique si la
+  baseline avait gagne).
+- **RandomForest retenu** (RMSE legerement meilleur que Ridge, ecart
+  modeste et documente comme tel — pas presente comme une victoire
+  ecrasante) **ET** parce que son signal dominant
+  (`lag_1_risk_score`+`lag_2_risk_score` = 45.7% d'importance cumulee) est
+  **plus aligne sur l'objectif reellement vise** (predire une TENDANCE
+  temporelle) que Ridge, dont les plus gros coefficients sont les dummies
+  `muscle_group` (capture surtout le niveau de risque de base propre a
+  chaque zone, deja connu via `dim_muscle.base_epidemiological_risk`,
+  plutot qu'une vraie dynamique).
+- **`duree_factor_avg` : coefficient ET importance a 0 dans les DEUX
+  modeles** — coherent avec un constat deja documente en Jalon 1
+  (`GOLD_MODEL_DECISIONS.md` section 8, `duration_seconds` quasi
+  toujours 0 sur ce dataset) : quasi aucune variance a exploiter, pas un
+  bug du script d'entrainement.
+- **`data/ml/model.pkl` (joblib, pipeline scikit-learn complet + metadonnees)
+  et `data/ml/training_metrics.json` restent NON versionnes** (couverts
+  par `data/ml/*` deja ignore) — artefacts regenerables par une
+  re-execution du script, meme logique que `train.parquet`/`test.parquet`.
+  Seul `ML_TRAINING_RESULTS.md` (documentation) est une exception versionnee.
+- **Conclusion volontairement nuancee dans `ML_TRAINING_RESULTS.md`** : le
+  gain du ML sur la baseline est reel et mesurable, mais **strictement
+  borne au perimetre mono-utilisateur** deja documente en sous-etape 3/6 —
+  explicitement NON presente comme une preuve de generalisation, et NE
+  remplace PAS la formule deterministe `risk_score` utilisee par le
+  dashboard (rappel deja acte : toute evolution vers du ML doit rester une
+  etape explicitement identifiee, jamais une modification silencieuse de
+  `fact_risk_score.sql`).
+
+### Jalon 3, sous-etape 5/6 — Integration pipeline + dashboard de la prediction ML (2026-07-09)
+
+Voir `PROGRESS_JALON3.md` pour le detail complet (verifications reelles,
+requetes, logs de la cascade Airflow). Resume des decisions structurantes :
+
+- **`scripts/score_risk_trend.py` IMPORTE (jamais ne duplique)**
+  `fetch_weekly_aggregates`/`build_features` de `prepare_ml_features.py` et
+  `impute_lag_nulls`/`NUMERIC_FEATURES`/`CATEGORICAL_FEATURES` de
+  `train_risk_trend_model.py` (`sys.path.insert` sur `SCRIPTS_DIR`, pas de
+  package Python formel — coherent avec l'absence de `__init__.py` dans
+  `scripts/`) : garantit que le scoring utilise EXACTEMENT les memes
+  features que l'entrainement (evite un "training/serving skew" silencieux,
+  bug classique en ML).
+- **`gold.ml_risk_prediction` creee directement par le script (psycopg2),
+  PAS geree par dbt** — meme raisonnement que `gold.gym_occupancy_live`
+  (Jalon 2) : la source de cette table est un modele ML externe, pas une
+  transformation SQL des donnees Gold existantes. Cle primaire
+  `(user_id, muscle_group)` + rafraichissement complet (`TRUNCATE` puis
+  reinsertion dans la meme transaction) a chaque execution : ce script
+  maintient un ETAT COURANT ("meilleure prediction disponible maintenant"),
+  pas un historique de predictions passees a preserver.
+- **Contrainte structurelle, pas un filtre ajoute** : seuls les
+  `(user_id, muscle_group)` deja presents dans `gold.fact_risk_score`
+  peuvent apparaitre dans `fetch_weekly_aggregates()` — aucune
+  extrapolation possible sur un historique vide par construction, pas
+  besoin d'une verification explicite supplementaire. Concretement :
+  8 lignes ecrites, toutes pour `user_id=9`.
+- **DAG `ml_scoring` declenche par `TriggerDagRunOperator` en fin de
+  `gold_dbt_run`** (apres `dbt_test`, meme mecanisme que
+  `bronze_ingestion -> silver_transformation -> gold_dbt_run`) : consequence
+  assumee, ce DAG se redeclenche donc aussi automatiquement apres qu'une
+  seance temps reel (Jalon 2) ait provoque un run `gold_dbt_run` — la
+  prediction ML reste a jour avec les memes donnees fraiches que
+  `risk_score`, sans mecanisme de synchronisation separe. Si `dbt_test`
+  echoue, `ml_scoring` n'est PAS declenche (`trigger_rule` par defaut =
+  `all_success`) : jamais de scoring sur des donnees Gold potentiellement
+  invalides. Perimetre volontairement borne au SCORING : aucun
+  reentrainement automatique (`train_risk_trend_model.py` reste une action
+  manuelle explicite, sous-etape 4/6).
+- **`GET /users/{user_id}/risk/prediction` : 2 cas "non disponible"
+  distingues explicitement**, jamais un 500 — table absente
+  (`to_regclass('gold.ml_risk_prediction')`, le DAG `ml_scoring` n'a jamais
+  tourne) vs table presente mais sans ligne pour cet utilisateur (pas
+  assez d'historique). Le champ `disclaimer` (texte source unique de
+  verite, meme mecanisme que `NUTRITION_DISCLAIMER`) est **toujours**
+  present dans la reponse, disponible ou non.
+- **Dashboard : encart "Tendance prédictive" DELIBEREMENT distinct
+  visuellement** du risk_score deterministe (bordure pointillee violette
+  `--accent-purple`, badge "EXPERIMENTAL" toujours visible — jamais une
+  simple nuance de ton facile a manquer) — jamais fusionne avec la
+  silhouette/jauge/zones sensibles. Desactive en mode demo (memes raisons
+  que le simulateur what-if/nutrition : pas d'`user_id` reel a associer aux
+  scenarios synthetiques). Si aucune prediction disponible pour le profil
+  selectionne : message explicite "Non disponible pour ce profil — {reason
+  de l'API}", **jamais l'encart masque sans explication**.
+- **Testee reellement en conditions de bout en bout** (pas juste le script
+  isole) : `airflow dags trigger gold_dbt_run` -> cascade complete observee
+  via `airflow tasks states-for-dag-run` (10 tasks `success`, dont
+  `trigger_ml_scoring`), run `ml_scoring` confirme `success` en ~1.6s,
+  8 lignes fraiches (`scored_at` horodate au moment du run) confirmees en
+  base par requete SQL directe. Endpoint teste sur 3 cas : `user_id=9`
+  (8 predictions), un utilisateur sans historique (`available:false` +
+  message clair), un `user_id` inexistant (404 propre). Frontend verifie
+  structurellement (JS/HTML/CSS bien formes — balises `section`/`div`
+  equilibrees 7/7 et 39/39, accolades CSS 128/128, tous les nouveaux `id`
+  references par `dashboard.js` resolus dans `index.html`) et servi
+  reellement par le conteneur (`curl` confirme le nouveau contenu present
+  dans `/`, `/static/dashboard.js`, `/static/dashboard.css`) — **rendu
+  visuel dans un navigateur non confirme** (meme limite deja documentee
+  pour tout le reste du dashboard, extension Chrome indisponible).
+- **Constat honnete non masque, documente plutot que corrige** : les
+  predictions `arms`/`back` s'appuient sur la semaine la plus recente
+  disponible pour ces zones, qui se trouve etre un point isole
+  (2026-07-06, test reel du formulaire temps reel de Jalon 2) sans aucun
+  contexte de lags reels (`lag_1`/`lag_2`/`lag_3` tous imputes a 0, faute
+  de semaine calendaire adjacente) — la prediction est techniquement
+  produite (le pipeline ne plante pas) mais structurellement moins fiable
+  que les 6 autres zones, ancrees sur l'historique dense reel de 2018.
+  Aucun filtre special-case n'a ete ajoute pour masquer ce cas : le
+  comportement du modele reste honnetement visible via `based_on_week`
+  (2026 vs 2018), affiche tel quel dans l'API et le dashboard.
+
+### Jalon 3, sous-etape 6/6 — Refonte UX/UI par onglets + corrections de débordement (2026-07-09)
+
+Voir `PROGRESS_JALON3.md` pour le detail complet (verifications reelles,
+bug de faux positif rencontre, calibration du seuil de troncature).
+Resume des decisions structurantes :
+
+- **Navigation par onglets SPA-style (changement de vue 100% JS via toggle
+  de classes CSS), PAS de rechargement de page ni de routes serveur
+  separees** : decision deja actee, necessaire pour preserver la
+  connexion SSE de l'affluence (qui vit en JS, independante du DOM
+  affiche/masque) et eviter tout temps de chargement pendant une demo
+  live. `.tab-panel { display:none; }` masque un onglet inactif SANS
+  jamais retirer ses elements du DOM — c'est cette garantie (pas de
+  destruction DOM) qui rend la survie de la SSE automatique, sans
+  mecanisme special a ecrire.
+- **3 onglets, regroupement par theme fonctionnel** : "Risque &
+  Entraînement" (silhouette, KPIs, zones sensibles, simulateur what-if,
+  logger une seance, tendance predictive ML), "Affluence" (SSE + creneau
+  recommande), "Nutrition" (TDEE/BMR, proteines, aliments). Le simulateur
+  what-if n'etait pas explicitement assigne dans la demande initiale —
+  regroupe dans "Risque & Entraînement" par defaut (seul emplacement
+  logique), pour ne perdre aucune fonctionnalite deja testee.
+- **Header sticky unique regroupant bandeau demo + header + nav
+  d'onglets** (`.app-header-sticky`, `position:sticky; top:0;`) plutot
+  que rendre chaque element sticky independamment avec des offsets `top`
+  calcules a la main : le selecteur d'utilisateur et le toggle demo sont
+  des REGLAGES GLOBAUX (pas propres a un onglet), ils doivent rester
+  visibles en permanence quel que soit l'onglet actif et le defilement.
+- **2 familles de correctifs anti-debordement distinctes selon le type
+  d'element** (decouverte structurante de cette passe) :
+  1. Elements HTML normaux (span/div/h3) : `overflow:hidden;
+     text-overflow:ellipsis; white-space:nowrap;` fonctionne de maniere
+     fiable — mais necessite `min-width:0` explicite sur le conteneur
+     flex/grid parent (`.kpi-card`, `.zone-name`, `.gym-card`,
+     `.nutrition-food-item`, `.ml-prediction-info`), sinon l'item refuse
+     par defaut de retrecir sous la largeur intrinseque de son texte et
+     desactive silencieusement l'ellipsis (piege CSS classique,
+     applicable aussi bien a Flexbox qu'a CSS Grid).
+  2. `<select>` natifs (exercices, scenarios demo) : CSS
+     `text-overflow:ellipsis` est **peu fiable sur l'etat FERME** d'un
+     select selon les navigateurs (coupure brutale sans "…" dans
+     certains cas). Correctif principal cote JS : `truncateForSelect()`
+     coupe le texte AVANT de l'inserer comme `<option>` ; texte complet
+     toujours accessible via l'attribut `title` (liste ouverte ET boite
+     fermee, cette derniere synchronisee par `updateSelectTitle()` sur
+     l'evenement `change` — attache UNE SEULE FOIS dans `init()`, jamais
+     dans les fonctions de repopulation appelees a chaque changement
+     d'utilisateur, pour ne jamais empiler de listeners dupliques sur un
+     select reutilise).
+- **Seuil de troncature des selects calibre sur des donnees reelles, pas
+  suppose** : un premier seuil de 55 caracteres ne declenchait JAMAIS sur
+  les 81 exercices reels de `user_id=9` alors que le label le plus long
+  (54 caracteres) deborde deja visuellement d'une colonne de 320px a
+  ~0.9rem (largeur en PIXELS, pas en nombre de caracteres — un seuil basé
+  uniquement sur le compte de caracteres est un raisonnement insuffisant
+  pour une police proportionnelle). Resserre a 42 caracteres, verifie
+  faire effectivement declencher la troncature sur 25/81 labels reels.
+- **Harmonisation des espacements** : `margin-top: 20px` redondant retire
+  de `.log-session-panel`/`.occupancy-panel`/`.nutrition-panel` (ces 3
+  panneaux cumulaient cette marge AVEC le `gap:24px` du conteneur flex
+  parent, contrairement aux autres panneaux qui n'avaient que le gap) —
+  `.tab-panel.active { gap: 24px }` gere desormais l'espacement de
+  maniere uniforme pour tous les panneaux d'un meme onglet.
+- **Bug reel trouve et corrige pendant la verification (pas dans le
+  produit final, dans le processus de verification lui-meme)** : un
+  premier controle automatique de l'equilibre des balises `<div>` a
+  signale un faux desequilibre (44 ouvrantes / 43 fermantes) — cause par
+  le propre commentaire HTML explicatif de cette passe, qui citait
+  litteralement une balise `<div class="tab-panel">` en exemple dans son
+  texte (capturee par le regex de verification comme une vraie balise).
+  Reformule pour ne plus contenir de balise litterale dans un
+  commentaire. Rappel utile pour toute future verification automatique
+  par comptage de balises sur ce projet : les commentaires HTML peuvent
+  produire des faux positifs s'ils citent des exemples de code.
+- **SSE de l'affluence : preuve de survie au changement d'onglet en 2
+  couches** — (1) preuve PAR CONSTRUCTION : `occupancyEventSource`
+  (variable JS) n'est reference que dans `connectOccupancyStream()`
+  (appelee UNE SEULE FOIS dans `init()`), `switchTab()` ne la touche
+  jamais et ne ferme/recree jamais l'`EventSource` (confirme par
+  recherche exhaustive dans `dashboard.js`) ; (2) preuve reseau REELLE
+  complementaire : `curl -N --max-time 35` sur `/gyms/occupancy/stream` a
+  recu 5 evenements reels sur la fenetre, confirmant le flux serveur
+  actif independamment de tout etat frontend.
+- **Verification visuelle reelle (captures d'ecran, rendu effectif a
+  l'ecran des 3 onglets/transitions/absence de chevauchement) NON
+  effectuee** — extension Chrome indisponible, meme limite documentee
+  depuis l'etape 5 du Jalon 1. L'absence de chevauchement a
+  1920x1080/1366x768 a ete verifiee par CALCUL de mise en page CSS
+  (max-width du conteneur principal inferieur aux deux largeurs cibles,
+  aucun positionnement absolu dans le CSS hors SVG a coordonnees
+  relatives au viewBox), pas par observation directe.
+
+### Passe de style "holographique/neon" (post-sous-étape 6/6, 2026-07-09)
+
+Voir `PROGRESS_JALON3.md` pour le detail complet (verifications reelles,
+bug de specificite CSS trouve et corrige). Resume des decisions
+structurantes :
+
+- **Reste strictement en SVG/CSS 2D** : aucun moteur 3D/particules ajoute
+  (contraire a la consigne initiale du projet, "silhouette schematique,
+  pas de 3D anatomique") — l'effet "holographique" vient uniquement
+  d'effets lumineux (`filter:drop-shadow`, `text-shadow`, degrades CSS)
+  appliques a des elements 2D existants.
+- **`--accent-cyan` : nouvelle couleur de marque, RESERVEE aux elements
+  neutres** (nav d'onglets active, bordures de card sans code couleur de
+  risque propre, chiffres "hero" generiques) — jamais utilisee pour les
+  codes couleur de risque (Faible/Modere/Eleve, inchanges) ni pour
+  remplacer `--accent-teal` existant (boutons/highlights deja en place,
+  non touches pour ne rien casser visuellement d'etabli).
+- **Lueur des zones/gauge pilotee par variable CSS injectee en JS
+  (`--zone-glow-color`/`--gauge-glow`), JAMAIS par `style.filter` direct** :
+  un `style.filter` inline depuis JS aurait une specificite superieure a
+  TOUTE regle CSS de classe (`:hover`/`.selected`), ecrasant silencieusement
+  ces etats au lieu de s'y additionner. La variable CSS permet aux 3
+  couches (etat repos, hover, selected) de composer leurs propres
+  `drop-shadow` sans jamais s'ecraser mutuellement.
+- **Silhouette enrichie SANS toucher aux courbes de contour existantes**
+  (deja eprouvees, jamais visuellement verifiees en navigateur donc
+  jugees trop risquees a modifier sans retour visuel) : 2 nouvelles zones
+  "trapezes" ajoutees (`data-muscle="shoulder"`, meme muscle_group que les
+  deltoides, aucune nouvelle donnee necessaire), 16->18 zones cliquables
+  au total.
+- **Langage "gros chiffre + label discret" generalise** via
+  `.hero-stat-value`/`.hero-stat-unit` (classes CSS partagees) : TDEE
+  (nutrition), besoin proteique (nutrition), pourcentage d'occupation
+  (affluence, couleur/lueur suivant la categorie de charge — jamais
+  cyan neutre pour ces elements DEJA codes par couleur de risque), score
+  de zone (`scoreBadge()` reecrit).
+- **⚠️ Bug reel trouve et corrige, PREEXISTANT depuis la sous-etape 5/6,
+  jamais dans le nouveau code de cette passe** : `.ml-prediction-panel`
+  seul (specificite CSS (0,1,0)) perdait TOUJOURS face au selecteur
+  partage `.bodymap-panel, .side-panel > div` (specificite (0,1,1)) pour
+  les proprietes `background`/`border`/`border-radius`/`box-shadow` — ce
+  panneau etant un `div` enfant direct de `.side-panel`, il correspond
+  aux deux selecteurs, et en CSS la specificite tranche independamment de
+  l'ordre d'apparition dans le fichier. **Consequence concrete : la
+  bordure pointillee violette et l'ombre distinctive de l'encart "Tendance
+  prédictive" n'avaient JAMAIS reellement rendu depuis leur creation** —
+  jamais detecte faute de verification visuelle reelle. Corrige avec un
+  selecteur combine ID+classe (`#ml-prediction-panel.ml-prediction-panel`).
+  **Rappel utile pour toute future regle CSS de ce projet visant a
+  surcharger le style par defaut d'un enfant direct d'un conteneur deja
+  cible par un selecteur combinateur (`>`)** : verifier la specificite
+  calculee, pas seulement l'ordre d'apparition dans le fichier.
+- **Risque de debordement anticipe et corrige AVANT mise en prod (pas en
+  reaction a un bug constate)** : en concevant le pattern "gros chiffre",
+  une chaine combinee type "2446 kcal/jour" a `font-size:2rem` a ete
+  identifiee comme deborderait une card de 260px — corrige en separant
+  systematiquement le CHIFFRE (`.hero-stat-value`, toujours court) de son
+  UNITE (`.hero-stat-unit`, span imbrique, police reduite).
+- **Lisibilite garantie par construction, pas juste "verifiee au jugé"** :
+  tous les `text-shadow` sont des halos flous DERRIERE un glyphe qui reste
+  100% opaque au premier plan (technique standard "neon text") — ne
+  floute jamais le texte lui-meme, contrairement a un `filter:blur()`
+  global qui affecterait le glyphe entier. Blur radius volontairement
+  modeste (12-18px).
+
 ## Conventions de nommage
 
 - Services Docker Compose et conteneurs : prefixe `safelift-` (ex:
@@ -1149,7 +1559,110 @@ Resume :
    eleve. 1 bug reel corrige (DAG reste bloque en pause a sa premiere
    apparition, `airflow dags unpause` necessaire — a refaire pour tout
    futur nouveau DAG de ce projet, voir rappel operationnel plus bas).
-2-6. ⏳ a faire — non definies.
+2. ✅ fait (2026-07-09, meme jour) — Dashboard nutrition :
+   `GET /users/{user_id}/nutrition` (lecture directe de
+   `fact_nutrition_target`/`dim_nutrition`, aucun recalcul cote API,
+   champ `disclaimer` toujours present dans la reponse), section
+   "Nutrition" cote dashboard (cards BMR/TDEE, jauge proteique, 8 aliments
+   suggeres) avec **avertissement ethique affiche en tout premier element
+   de la section, jamais cache** (contrainte non negociable). Teste sur 3
+   profils reels differents (40kg -> TDEE 1711 ; 64.1kg -> TDEE 2446 ;
+   129.9kg -> TDEE 3271, coherent avec la sous-etape 1/6). Verification
+   VISUELLE (capture d'ecran) non effectuee (extension Chrome
+   indisponible) — verification structurelle du DOM/CSS confirme
+   l'absence de toute classe/regle masquant l'avertissement par defaut.
+3. ✅ fait (2026-07-09, meme jour) — Preparation des donnees ML (pas
+   d'entrainement) : `scripts/prepare_ml_features.py` agrege
+   `gold.fact_risk_score` par `(user_id, muscle_group, week_start_date)`,
+   construit des lags calendaires exacts (1/2/3 semaines, `NULL` si la
+   semaine precise n'existe pas, jamais interpole) et la cible
+   `target_next_week_risk_score` (semaine suivante). Split TEMPOREL (pas
+   aleatoire) : cutoff `2018-03-19`, 491 lignes train / 161 lignes test.
+   **Mono-utilisateur** (`user_id=9` uniquement) — limite documentee en
+   detail, avec chiffres exacts et verification anti-fuite reelle, dans
+   `data/ml/ML_DATA_PREP.md`.
+4. ✅ fait (2026-07-09, meme jour) — Entrainement + evaluation du modele
+   ML bonus : `scripts/train_risk_trend_model.py` (`scikit-learn==1.5.2`
+   ajoute a `airflow/requirements.txt`, image `safelift-airflow:local`
+   reconstruite). **UN SEUL modele poole sur les 8 zones** (`muscle_group`
+   en one-hot), pas 8 modeles independants (decision deja actee en
+   sous-etape 3/6). 3 approches comparees sur le TEST set (161 lignes) :
+   baseline naive (RMSE 14.69), Ridge (RMSE 9.27), RandomForest
+   `max_depth=4` (RMSE 9.12, **modele retenu**) — les deux modeles ML
+   battent nettement la baseline (~37% de reduction RMSE). Feature
+   importance RandomForest dominee par `lag_1`/`lag_2_risk_score` (45.7%
+   cumule) — signal temporel coherent avec l'objectif, pas du bruit.
+   Modele sauvegarde (`data/ml/model.pkl`, pipeline scikit-learn complet +
+   metadonnees). **Conclusion honnete documentee dans
+   `data/ml/ML_TRAINING_RESULTS.md`** : gain reel mais strictement borne
+   au perimetre mono-utilisateur deja documente, pas une preuve de
+   generalisation.
+5. ✅ fait (2026-07-09, meme jour) — Integration pipeline + dashboard de la
+   prediction ML : `scripts/score_risk_trend.py` (charge `data/ml/model.pkl`,
+   REUTILISE `prepare_ml_features.fetch_weekly_aggregates`/`build_features`
+   et `train_risk_trend_model.impute_lag_nulls` par import, aucune
+   duplication) ecrit `gold.ml_risk_prediction` (table creee directement en
+   psycopg2, PAS geree par dbt). Ne produit une prediction QUE pour les
+   `(user_id, muscle_group)` avec au moins une semaine d'historique reel
+   (concretement `user_id=9` uniquement, 8 lignes) — aucune extrapolation
+   pour un utilisateur sans historique. DAG `airflow/dags/ml_scoring.py`
+   declenche automatiquement en fin de `gold_dbt_run` (`trigger_ml_scoring`
+   ajoute apres `dbt_test`, meme mecanisme `TriggerDagRunOperator` que le
+   reste de la cascade). `GET /users/{user_id}/risk/prediction` (dashboard) :
+   lecture seule, `available:false` + message clair (jamais 500) si la table
+   n'existe pas encore ou si l'utilisateur n'a aucune prediction. Encart
+   dashboard "Tendance prédictive" **volontairement distinct** du risk_score
+   deterministe (bordure pointillee violette + badge EXPERIMENTAL, jamais
+   fusionne visuellement), desactive en mode demo, message explicite
+   "non disponible pour ce profil" si aucune prediction. **Testee en
+   conditions reelles de bout en bout** : DAG `gold_dbt_run` declenche
+   manuellement -> cascade complete jusqu'a `ml_scoring` confirmee
+   (`trigger_ml_scoring` puis run `ml_scoring` tous deux `success`), 8
+   predictions ecrites avec un `scored_at` frais ; endpoint teste sur
+   `user_id=9` (8 predictions) ET sur un utilisateur sans historique
+   (`available:false`, message clair) ET sur un `user_id` inexistant (404
+   propre). **Constat honnete non masque** : pour les zones `arms`/`back`,
+   la semaine la plus recente disponible est un point isole de test
+   temps reel (2026-07-06, Jalon 2) sans aucun contexte de lags reels
+   (imputes a 0) — prediction techniquement produite mais moins fiable que
+   les 6 autres zones, ancrees sur l'historique dense reel de 2018.
+6. ✅ fait (2026-07-09, meme jour) — Refonte UX/UI par onglets +
+   corrections de debordement : navigation SPA-style par 3 onglets
+   ("Risque & Entraînement", "Affluence", "Nutrition", changement de vue
+   100% JS, aucun rechargement/route serveur), pas de nouvelle
+   fonctionnalite. Header (selecteur utilisateur + toggle demo) regroupe
+   avec le bandeau demo et la nav dans un wrapper `sticky`, visible en
+   permanence quel que soit l'onglet. Debordements de texte corriges (2
+   familles : ellipsis+title sur elements HTML normaux, troncature JS
+   explicite sur les `<select>` natifs — CSS seul peu fiable sur leur
+   etat ferme). Espacements harmonises (`margin-top` redondant retire de
+   3 panneaux). **SSE de l'affluence confirmee survivre au changement
+   d'onglet** (preuve par construction : `switchTab()` ne touche jamais
+   `occupancyEventSource` ni ne ferme la connexion — les panneaux
+   masques via `display:none` restent dans le DOM ; verifie aussi en
+   conditions reelles, 5 evenements SSE recus sur une fenetre de 35s via
+   `curl -N`). Voir PROGRESS_JALON3.md pour le detail complet (bug de
+   faux positif sur le comptage de balises, calibration reelle du seuil
+   de troncature sur les 81 exercices de `user_id=9`).
+7. ✅ fait (2026-07-09, meme jour) — Passe de style "holographique/neon"
+   (post-sous-etape 6/6, purement visuelle, aucune nouvelle
+   fonctionnalite) : nouvelle couleur de marque `--accent-cyan` (elements
+   neutres uniquement, codes couleur de risque inchanges), lueurs
+   `filter:drop-shadow`/`text-shadow` sur la silhouette (zones actives +
+   anneau du score global) et les chiffres "hero", silhouette enrichie de
+   2 zones "trapezes" (mappees sur `shoulder`, meme muscle_group — 16->18
+   zones cliquables), langage "gros chiffre + label discret" generalise
+   (TDEE, proteines, occupancy, score de zone). **Bug reel trouve et
+   corrige, preexistant depuis la sous-etape 5/6** : specificite CSS
+   insuffisante (`.ml-prediction-panel` seul perdait face au selecteur
+   partage `.bodymap-panel, .side-panel > div`) faisait que la bordure
+   pointillee violette de "Tendance prédictive" n'avait JAMAIS reellement
+   rendu — corrige avec un selecteur combine ID+classe. Risque de
+   debordement anticipe et corrige AVANT mise en prod (chiffre/unite
+   systematiquement separes en 2 tailles de police distinctes). Non-
+   regression confirmee reellement (backend, SSE 5 evenements/35s,
+   simulateur what-if, 12 services `healthy`). Voir PROGRESS_JALON3.md
+   pour le detail complet.
 
 ## Prochaines actions prevues
 
