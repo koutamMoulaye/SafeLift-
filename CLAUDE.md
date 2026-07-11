@@ -772,6 +772,146 @@ exacts dans `data/gold/GOLD_MODEL_DECISIONS.md` section 5 — resume ici :
   supprimer l'historique** (les chiffres precedents restent visibles en
   colonnes de comparaison, jamais silencieusement ecrases).
 
+### Interaction clic-sur-zone + correctifs d'alignement (2026-07-11)
+
+Port de l'interaction "cliquer sur une zone de la silhouette -> panneau
+detaille avec les 5 facteurs de risque" depuis l'ancien dashboard
+(`renderZoneDetail()`/`onZoneClick()` de `dashboard/static/dashboard.js`),
+**absente jusque-la de dashboard-v2** (verifie avant tout developpement :
+aucun `onClick` sur les zones de `Silhouette.jsx`). Deux defauts visuels
+identifies sur l'ancien dashboard sont **corriges plutot que reproduits**
+sur v2 -- l'ancien dashboard, lui, N'EST PAS retouche (garde ses defauts
+connus, hors perimetre de cette tache).
+
+**Nouveau : `selectedMuscle`/`setSelectedMuscle` dans `DashboardContext`**
+(reinitialise automatiquement au changement de profil/mode demo, pour ne
+jamais afficher le detail d'une zone qui n'a plus de sens dans le nouveau
+contexte). **Nouveau composant `ZoneDetailPanel.jsx`** (place juste apres
+"Zones sensibles" dans la colonne gauche, meme ordre que l'ancien
+dashboard) : zone + badge score/niveau + 5 barres de facteurs + dernier
+exercice/date (ou libelle du scenario en mode demo). Gere aussi le cas
+"mollets" (aucune donnee reelle possible, `classify_muscle_group.sql` ne
+produit jamais cette categorie) avec une explication honnete au clic,
+meme esprit "pas de boite noire" que l'ancien dashboard.
+
+**Barres de facteurs en WIREFRAME** (pas les capsules pleines
+`.factor-fill` a fond uni de l'ancien dashboard) : chaque barre est un
+petit SVG (track en trait fin `fill:none`+`stroke`, portion de valeur en
+trait plus epais avec `drop-shadow`) -- **couleur neutre `--color-cyan`**
+(pas codee par niveau de risque), reprenant la regle deja actee lors de
+la passe de style holographique ("cyan reserve aux elements neutres,
+jamais aux codes couleur Faible/Modere/Eleve").
+
+**⚠️ Bug reel trouve et corrige PENDANT l'implementation** : les zones
+SVG ont `fill="none"` (rendu wireframe) -- par defaut, un element SVG non
+rempli ne repond aux clics QUE sur son trait peint (`pointer-events:
+visiblePainted`), pas sur toute sa surface geometrique interieure.
+Sans correctif, cliquer au milieu d'une zone (pas exactement sur le trait
+de 1-2px) n'aurait rien declenche. Corrige avec `pointer-events: fill`
+sur chaque zone (repond a toute la surface geometrique, meme non peinte).
+**2e bug trouve en verifiant** : les points d'articulation decoratifs
+("motion capture", cyan) sont rendus APRES les zones dans le SVG (donc
+au-dessus) et certains coincident exactement avec le centre d'une zone
+cliquable (ex. le point du genou = centre exact du cercle "knee") --
+confirme via `document.elementFromPoint()` (pas a l'oeil) : le petit
+point decoratif interceptait le clic destine a la zone en dessous.
+Corrige avec `pointer-events: none` explicite sur ces points (purement
+visuels, ne doivent jamais faire obstacle a une zone interactive).
+
+**Correctifs d'alignement, verifies PROGRAMMATIQUEMENT (pas a l'oeil)
+via `SVGGeometryElement.isPointInFill`** :
+- **Glow des trapezes (zones "shoulder" pres du cou) debordant sur la
+  tete** : confirme par capture d'ecran zoomee AVANT correctif (1px
+  d'ecart seulement entre le sommet du trapeze, y=58, et le bas de
+  l'ellipse de tete, y=57 -- avec un rayon de lueur de ~7px, le
+  debordement visuel etait quasi garanti). Corrige en decalant les 2
+  paths trapezes de +8 en Y (nouvelles constantes
+  `TRAPEZIUS_LEFT_D`/`TRAPEZIUS_RIGHT_D` dans `Silhouette.jsx`) --
+  degage ~9px de marge reelle, confirme par capture APRES correctif (plus
+  aucun contact visuel entre le glow ambre et le contour de la tete).
+- **Marqueurs coude/hanche mal centres sur le tracé du membre** : le
+  coude gauche (44,150) tombait exactement sur le bord EXTERIEUR du bras
+  (bord gauche du tracé a cette hauteur = x:44 pile, centre reel = x:59.25,
+  mesure par balayage `isPointInFill` le long de y=150) ; la hanche
+  gauche (94,204) tombait carrement HORS du tracé des jambes (qui ne
+  commence qu'a y=206). Coordonnees recalculees : coudes (59,150)/(181,150)
+  (etaient (44,150)/(196,150)), hanches (106,210)/(134,210) (etaient
+  (94,204)/(146,204)). Genoux et epaules deja corrects (coincidaient deja
+  exactement avec le centre de leur cercle/ellipse respectif), non
+  modifies.
+
+**Teste reellement (pas suppose) : 6 clics sur 6 zones differentes, 2
+profils differents** (`user_id=83` : epaule/pectoraux/genou ;
+`user_id=46` : pectoraux/bras/bas du dos) -- chaque clic affiche des
+valeurs reelles et distinctes, capture d'ecran du panneau ouvert prise
+sur les 2 profils. Cas "mollets" (jamais de donnee) et mode demo
+(scenario synthetique + reinitialisation au retour en mode reel) testes
+et confirmes fonctionnels, 0 erreur JS. Non-regression confirmee sur les
+6 autres widgets (Logger seance, Simulateur what-if, Affluence,
+Nutrition, Tendance ML, Zones sensibles) + le correctif du switch
+utilisateur sur la silhouette (2026-07-11, toujours actif). `npm run
+build`/`lint` propres.
+
+**Fichiers** : `src/components/Silhouette.jsx` (modifie : geometrie
+trapezes + JOINTS corrigees, `pointer-events`, `onClick`/surbrillance
+selection), `src/components/ZoneDetailPanel.jsx` (nouveau),
+`src/context/DashboardContext.jsx` (+`selectedMuscle`/`setSelectedMuscle`),
+`src/App.jsx` (integration colonne gauche). **Ancien dashboard
+(`dashboard/`) non modifie** -- ses defauts d'alignement restent
+presents la-bas, documentes ici mais hors perimetre de correction pour
+ce fichier (filet de securite, jamais retouche au-dela de l'exception
+CORS deja actee).
+
+**Complement, meme jour** : l'utilisateur a signale juste apres cette
+passe l'absence de legende de couleurs sous la silhouette (presente sur
+l'ancien dashboard, `<ul class="legend">` de
+`dashboard/static/index.html`, jamais portee sur dashboard-v2 lors du
+scaffolding initial -- verifie par grep avant tout developpement, 0
+occurrence de "legend" dans `Silhouette.jsx`). Ajoutee dans
+`Silhouette.jsx`, juste apres le texte de statut : memes 4 niveaux/memes
+couleurs exactes (`--color-risk-faible/modere/eleve/none`, deja
+utilisees ailleurs dans le fichier), restylees en pastilles avec lueur
+(coherent avec le rendu wireframe) plutot que les carres pleins "swatch"
+de l'ancien dashboard. Testee reellement : legende + interaction clic
+re-verifiees ensemble sur une page fraichement chargee (capture
+d'ecran a l'appui), aucune regression.
+
+**2e complement, meme jour** : 3 demandes de style/correctif
+supplementaires sur la silhouette, toutes traitees dans
+`Silhouette.jsx` :
+1. **Quadrillage technique en fond** : motif SVG `<pattern>` repete
+   (grille 20x20 unites, trait cyan fin), estompe vers les bords via un
+   masque a degrade radial (`gridFadeGradient`/`gridFadeMask`) -- a
+   l'INTERIEUR du meme `<svg>` que la silhouette (suit automatiquement la
+   meme animation de "respiration" Framer Motion, pas une image de fond
+   CSS separee qui aurait pu se desynchroniser).
+2. **Zones remplies plutot que traits colores seuls** : `fill:none`
+   remplace par `fill: color` + `fillOpacity` (0.38 si donnee reelle,
+   0.14 sinon) sur toutes les zones -- compromis assume entre la demande
+   ("remplir les membres de couleurs") et l'esprit holographique deja
+   etabli : remplissage TRANSLUCIDE (pas opaque a 100%), trait + glow
+   conserves pour la limite de zone, pour ne pas revenir aux capsules
+   pleines plates de l'ancien dashboard (explicitement evitees lors de la
+   refonte wireframe initiale).
+3. **⚠️ Bug reel trouve et corrige, signale par l'utilisateur
+   ("décalage... au niveau des tibias")** : le path du mollet DROIT
+   n'etait PAS le vrai miroir du mollet gauche -- verifie precisement en
+   mirorant chaque point de controle du mollet gauche (x -> 240-x) :
+   sommet attendu x:134-150 (centre 142), l'ancien path utilisait
+   x:150-166 (centre 158), soit un decalage de 16px vers la droite par
+   rapport au vrai miroir. Corrige en recalculant le miroir exact point
+   par point (plus aucune coordonnee de mollet approximee a la main) --
+   confirme par capture d'ecran avant/apres (mollets desormais
+   parfaitement symetriques sous les genoux).
+
+Testee reellement : capture pleine silhouette (grille+remplissage+mollets
+corriges visibles simultanement), capture zoomee mollets avant/apres,
+capture sur une zone Modere (couleur ambre, confirme que le remplissage
+fonctionne aussi hors vert), clic sur zone re-teste apres ce changement de
+style (`fill` reel rend `pointer-events:fill` non strictement necessaire
+mais conserve par robustesse) -- toujours fonctionnel, 0 erreur JS,
+`npm run build`/`lint` propres.
+
 ## Architecture cible (finale, toutes etapes confondues)
 
 ```

@@ -33,6 +33,14 @@ export function DashboardProvider({ children }) {
   const [history, setHistory] = useState([]);
   const [historyStatus, setHistoryStatus] = useState("idle");
 
+  // Zone selectionnee par clic sur la silhouette (panneau "Detail de la
+  // zone selectionnee", porte depuis l'ancien dashboard le 2026-07-11).
+  // Reinitialisee au changement de profil/mode demo -- eviter d'afficher
+  // le detail d'une zone qui n'a plus de sens pour le nouveau contexte
+  // (ex: zone Modere chez user_id=9 encore affichee apres bascule vers
+  // user_id=21, qui n'a peut-etre pas de donnee sur cette meme zone).
+  const [selectedMuscle, setSelectedMuscle] = useState(null);
+
   // Compteurs incrementes pour forcer un refetch sans changer userId --
   // utilise par le formulaire "Logger une seance" une fois qu'un
   // changement de score reel est detecte par son propre polling.
@@ -102,6 +110,10 @@ export function DashboardProvider({ children }) {
     };
   }, [isDemoMode, selectedUserId, historyRefreshKey]);
 
+  useEffect(() => {
+    setSelectedMuscle(null);
+  }, [selectedUserId, isDemoMode]);
+
   const selectedScenario = useMemo(
     () => demoScenarios.find((s) => s.scenario_id === selectedScenarioId) || null,
     [demoScenarios, selectedScenarioId]
@@ -129,6 +141,8 @@ export function DashboardProvider({ children }) {
     musclesStatus,
     history,
     historyStatus,
+    selectedMuscle,
+    setSelectedMuscle,
     // Appele par le formulaire "Logger une seance" apres detection d'un
     // score change -- rafraichit muscles ET historique d'un seul geste
     // (equivalent du onUserChange() complet de l'ancien dashboard).

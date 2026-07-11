@@ -14,9 +14,38 @@ import { useDashboard } from "../hooks/useDashboard";
 // ET le toggle mode demo EXACTEMENT comme les autres widgets (meme
 // `muscles`/`musclesStatus`, meme declencheur).
 //
-// Geometrie INCHANGEE (memes coordonnees exactes que la version
-// precedente / que l'ancien dashboard vanilla, viewBox 240x480) : seule la
-// source des donnees a change, pas le rendu SVG.
+// ⚠️ INTERACTION CLIC + CORRECTIFS D'ALIGNEMENT (2026-07-11) : geometrie
+// des zones INCHANGEE (memes coordonnees que l'ancien dashboard vanilla,
+// viewBox 240x480), MAIS deux defauts visuels identifies sur l'ancien
+// dashboard (et herites tels quels ici, memes coordonnees) sont corriges
+// plutot que reproduits -- voir CLAUDE.md pour le detail complet :
+//   1. Le glow des trapezes (zones "shoulder" pres du cou) touchait/
+//      debordait visuellement sur la tete -- confirme par capture d'ecran
+//      zoomee (1px d'ecart seulement entre le sommet du trapeze, y=58, et
+//      le bas de l'ellipse de tete, y=57). Corrige en decalant les 2 paths
+//      trapezes de +8 en Y (voir TRAPEZIUS_LEFT_D/TRAPEZIUS_RIGHT_D
+//      ci-dessous) -- degage un espace reel (~9px) au lieu de quasi-zero.
+//   2. Les marqueurs d'articulation "coude"/"hanche" (JOINTS) etaient
+//      positionnes sur ou hors du tracé du membre au lieu d'etre centres
+//      -- confirme PROGRAMMATIQUEMENT (pas a l'oeil) via
+//      SVGGeometryElement.isPointInFill sur les paths bras/jambes : le
+//      coude gauche (44,150) tombait exactement sur le bord exterieur du
+//      bras (bord gauche du tracé a cette hauteur = x:44, centre reel =
+//      x:59.25) ; la hanche gauche (94,204) tombait carrement HORS du
+//      tracé des jambes (qui ne commence qu'a y=206). Coordonnees
+//      recalculees ci-dessous pour retomber au centre reel du tracé.
+// Ajout du clic sur zone (nouveau panneau "Detail de la zone
+// selectionnee", voir ZoneDetailPanel.jsx) : geometrie/couleurs des
+// zones non affectees, seul un gestionnaire onClick + une couche de
+// surbrillance conditionnelle sont ajoutes.
+
+// Trapezes decales de +8 en Y par rapport aux coordonnees d'origine
+// (M107,58 ... / M133,58 ...) pour degager la tete -- seule modification
+// geometrique de cette passe, documentee ici (pas une regression
+// silencieuse : ancien dashboard NON touche, garde ses coordonnees
+// d'origine avec le defaut connu).
+const TRAPEZIUS_LEFT_D = "M107,66 C100,70 94,76 92,86 C97,84 104,79 111,73 C110,70 109,68 107,66 Z";
+const TRAPEZIUS_RIGHT_D = "M133,66 C140,70 146,76 148,86 C143,84 136,79 129,73 C130,70 131,68 133,66 Z";
 
 const COLOR_BY_LEVEL = {
   Faible: "var(--color-risk-faible)",
@@ -37,16 +66,8 @@ const STRUCTURE_STROKE = "#3d4f6b";
 const ZONES = [
   { muscle: "back", type: "circle", cx: 92, cy: 76, r: 9, outline: true },
   { muscle: "back", type: "circle", cx: 148, cy: 76, r: 9, outline: true },
-  {
-    muscle: "shoulder",
-    type: "path",
-    d: "M107,58 C100,62 94,68 92,78 C97,76 104,71 111,65 C110,62 109,60 107,58 Z",
-  },
-  {
-    muscle: "shoulder",
-    type: "path",
-    d: "M133,58 C140,62 146,68 148,78 C143,76 136,71 129,65 C130,62 131,60 133,58 Z",
-  },
+  { muscle: "shoulder", type: "path", d: TRAPEZIUS_LEFT_D },
+  { muscle: "shoulder", type: "path", d: TRAPEZIUS_RIGHT_D },
   { muscle: "shoulder", type: "ellipse", cx: 76, cy: 90, rx: 24, ry: 19 },
   { muscle: "shoulder", type: "ellipse", cx: 164, cy: 90, rx: 24, ry: 19 },
   {
@@ -82,8 +103,17 @@ const ZONES = [
   },
   {
     muscle: "calves",
+    // ⚠️ BUG REEL trouve et corrige (2026-07-11, signale par l'utilisateur
+    // -- "decalage au niveau des tibias") : ce path n'etait PAS le vrai
+    // miroir du mollet gauche. Verifie precisement en mirorant chaque
+    // point de controle du mollet gauche (x -> 240-x) : le sommet attendu
+    // du mollet droit est x:134-150 (centre 142), l'ancien path utilisait
+    // x:150-166 (centre 158) -- decale de 16px vers la droite par rapport
+    // au vrai miroir, d'ou le mollet visuellement detache/desaligne sous
+    // le genou droit. Corrige en recalculant le miroir exact du mollet
+    // gauche point par point (plus aucune coordonnee approximee a la main).
     type: "path",
-    d: "M150,352 C148,380 148,415 152,445 C156,449 164,449 168,445 C171,415 170,380 166,352 C161,349 155,349 150,352 Z",
+    d: "M150,352 C152,380 152,415 148,445 C144,449 136,449 132,445 C129,415 130,380 134,352 C139,349 145,349 150,352 Z",
   },
 ];
 
@@ -92,14 +122,14 @@ const ZONES = [
 // les donnees (purement decoratif, coordonnees approximatives des
 // epaules/coudes/hanches/genoux deduites de la geometrie ci-dessus).
 const JOINTS = [
-  { x: 76, y: 90 }, // epaule gauche
-  { x: 164, y: 90 }, // epaule droite
-  { x: 44, y: 150 }, // coude gauche
-  { x: 196, y: 150 }, // coude droit
-  { x: 94, y: 204 }, // hanche gauche
-  { x: 146, y: 204 }, // hanche droite
-  { x: 98, y: 330 }, // genou gauche
-  { x: 142, y: 330 }, // genou droit
+  { x: 76, y: 90 }, // epaule gauche -- deja au centre exact de l'ellipse deltoide (cx=76,cy=90), inchange
+  { x: 164, y: 90 }, // epaule droite -- idem (cx=164,cy=90), inchange
+  { x: 59, y: 150 }, // coude gauche -- recalcule (etait 44, sur le bord exterieur du bras ; centre reel du tracé a y=150 = 59.25, verifie via isPointInFill)
+  { x: 181, y: 150 }, // coude droit -- symetrique (240-59)
+  { x: 106, y: 210 }, // hanche gauche -- recalcule (etait 94,204, hors du tracé des jambes qui ne commence qu'a y=206 ; centre reel du tracé a y=210 = 106.5)
+  { x: 134, y: 210 }, // hanche droite -- symetrique (240-106)
+  { x: 98, y: 330 }, // genou gauche -- deja au centre exact du cercle (cx=98,cy=330), inchange
+  { x: 142, y: 330 }, // genou droit -- idem (cx=142,cy=330), inchange
 ];
 
 function zoneColor(muscle, byMuscle) {
@@ -108,26 +138,49 @@ function zoneColor(muscle, byMuscle) {
   return COLOR_BY_LEVEL[entry.risk_level] || COLOR_NONE;
 }
 
-// Rendu d'une zone en WIREFRAME : fill:none + stroke colore par le risque,
-// AUCUNE surface remplie. La lueur (drop-shadow) est appliquee au TRAIT
-// lui-meme (deux couches, un halo serre + un halo large, pour un effet
-// "trait neon" plutot qu'un nuage flou autour d'une masse) -- UNIQUEMENT
-// si une vraie donnee existe pour cette zone (meme regle deja etablie :
-// jamais de lueur sur le gris "pas de donnee").
-function renderZoneShape(zone, index, byMuscle) {
+// Rendu d'une zone EN SURFACE REMPLIE (2026-07-11, demande explicite --
+// avant cette passe, seul le TRAIT etait colore, fill:none partout).
+// Remplissage translucide (fill-opacity, PAS opaque a 100%) + trait/glow
+// conserves pour la lecture de la limite de la zone et l'effet
+// holographique deja etabli -- un remplissage opaque plat aurait
+// reproduit le look "app tracker" de l'ancien dashboard, explicitement
+// evite lors de la refonte wireframe initiale ; le compromis retenu ici
+// (surface remplie mais translucide) satisfait la demande ("remplir les
+// membres de couleurs") sans revenir a des capsules pleines opaques.
+// Cliquable (curseur + onClick) sur toutes les zones -- y compris
+// "calves", qui n'a jamais de donnee reelle mais reste cliquable pour
+// l'expliquer (voir ZoneDetailPanel.jsx), meme logique que l'ancien
+// dashboard.
+function renderZoneShape(zone, index, byMuscle, { isSelected, onClick } = {}) {
   const color = zoneColor(zone.muscle, byMuscle);
   const hasData = Boolean(byMuscle[zone.muscle]);
   const commonProps = {
     key: index,
-    fill: "none",
+    fill: color,
+    fillOpacity: hasData ? 0.38 : 0.14,
     stroke: color,
-    strokeWidth: zone.outline ? 1.2 : 1.8,
+    strokeWidth: (zone.outline ? 1.2 : 1.6) + (isSelected ? 0.6 : 0),
     strokeDasharray: zone.outline ? "3 2" : undefined,
+    className: "cursor-pointer",
+    onClick: () => onClick?.(zone.muscle),
     style: {
-      filter: hasData
-        ? `drop-shadow(0 0 2px ${color}) drop-shadow(0 0 7px ${color})`
-        : `drop-shadow(0 0 2px ${color})`,
-      transition: "stroke 0.3s ease, filter 0.3s ease",
+      // Note : avec un fill reel (plus fill:none), pointer-events:fill
+      // n'est plus strictement necessaire (le fill peint repond deja aux
+      // clics par defaut) -- conserve explicitement pour rester robuste
+      // si fillOpacity venait a redescendre pres de 0 pour une raison
+      // future (ex. zone "pas de donnee" tres transparente).
+      pointerEvents: "fill",
+      // Selection : couche de glow blanche additionnelle EN PLUS de la
+      // couleur de risque (jamais a la place) -- meme principe que
+      // .zone.selected de l'ancien dashboard (brightness + halo blanc),
+      // porte en inline style ici (pas de classe CSS globale sur un SVG
+      // genere dynamiquement).
+      filter: isSelected
+        ? `brightness(1.3) drop-shadow(0 0 3px rgba(255,255,255,0.85)) drop-shadow(0 0 8px ${color})`
+        : hasData
+          ? `drop-shadow(0 0 2px ${color}) drop-shadow(0 0 7px ${color})`
+          : `drop-shadow(0 0 2px ${color})`,
+      transition: "fill-opacity 0.3s ease, stroke 0.3s ease, filter 0.3s ease, stroke-width 0.3s ease",
     },
   };
 
@@ -148,7 +201,8 @@ function renderZoneShape(zone, index, byMuscle) {
 }
 
 export default function Silhouette() {
-  const { muscles, musclesStatus: status, selectedUserId, isDemoMode } = useDashboard();
+  const { muscles, musclesStatus: status, selectedUserId, isDemoMode, selectedMuscle, setSelectedMuscle } =
+    useDashboard();
 
   const byMuscle = {};
   muscles.forEach((m) => (byMuscle[m.muscle_group] = m));
@@ -174,6 +228,37 @@ export default function Silhouette() {
         animate={{ scale: [1, 1.015, 1], opacity: [1, 0.97, 1] }}
         transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
       >
+        {/* Quadrillage technique en fond (2026-07-11, demande explicite --
+            grille "HUD" derriere la silhouette, absente jusqu'ici). Motif
+            SVG repete (pas une image), a l'INTERIEUR du meme <svg> que la
+            silhouette pour suivre exactement la meme animation/mise a
+            l'echelle. Estompe vers les bords via un masque a degrade
+            radial (`gridFade`) -- une grille uniforme jusqu'au bord aurait
+            attire l'oeil davantage que la silhouette elle-meme, contraire
+            a l'esprit "cadre technique discret" deja etabli pour
+            l'armature structurelle. */}
+        <defs>
+          <pattern id="techGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="var(--color-cyan)" strokeWidth="0.5" />
+          </pattern>
+          <radialGradient id="gridFadeGradient" cx="50%" cy="40%" r="65%">
+            <stop offset="0%" stopColor="white" stopOpacity="1" />
+            <stop offset="100%" stopColor="white" stopOpacity="0" />
+          </radialGradient>
+          <mask id="gridFadeMask">
+            <rect x="0" y="0" width="240" height="480" fill="url(#gridFadeGradient)" />
+          </mask>
+        </defs>
+        <rect
+          x="0"
+          y="0"
+          width="240"
+          height="480"
+          fill="url(#techGrid)"
+          mask="url(#gridFadeMask)"
+          opacity="0.4"
+        />
+
         {/* Armature structurelle : tete/cou/contour/clavicules/ligne
             mediane -- TOUT en fill:none + stroke fin, couleur neutre
             discrete (STRUCTURE_STROKE), sans lueur forte (juste une legere
@@ -215,8 +300,14 @@ export default function Silhouette() {
         <path fill="none" stroke={STRUCTURE_STROKE} strokeWidth="1.2" d="M110,60 C104,62 98,64 94,68" />
         <path fill="none" stroke={STRUCTURE_STROKE} strokeWidth="1.2" d="M130,60 C136,62 142,64 146,68" />
 
-        {/* Zones musculaires (donnees reelles) : wireframe colore par le risque */}
-        {ZONES.map((zone, i) => renderZoneShape(zone, i, byMuscle))}
+        {/* Zones musculaires (donnees reelles) : wireframe colore par le risque,
+            cliquables -- ouvre le panneau "Detail de la zone selectionnee". */}
+        {ZONES.map((zone, i) =>
+          renderZoneShape(zone, i, byMuscle, {
+            isSelected: selectedMuscle === zone.muscle,
+            onClick: setSelectedMuscle,
+          })
+        )}
 
         {/* Sangle abdominale : lignes structurelles */}
         <line x1="120" y1="148" x2="120" y2="192" stroke={STRUCTURE_STROKE} strokeWidth="1" />
@@ -225,7 +316,18 @@ export default function Silhouette() {
 
         {/* Points d'articulation "motion capture" -- optionnel, purement
             decoratif (non branche aux donnees), renforce l'effet
-            wireframe technique. */}
+            wireframe technique.
+            ⚠️ BUG REEL trouve et corrige (2026-07-11, pendant l'ajout du
+            clic sur zone) : ces points sont rendus APRES les zones (donc
+            au-dessus dans l'empilement SVG) et certains coincident
+            EXACTEMENT avec le centre d'une zone cliquable (ex. le point
+            du genou gauche, x=98/y=330, tombe pile sur le centre du
+            cercle "knee" de meme centre) -- confirme via
+            `document.elementFromPoint()` : le petit cercle decoratif
+            (fill plein, r=2.2) interceptait le clic destine a la zone
+            EN DESSOUS. `pointer-events: none` explicite : purement
+            visuel, ne doit jamais faire obstacle a une zone interactive
+            sous-jacente. */}
         {JOINTS.map((j, i) => (
           <circle
             key={`joint-${i}`}
@@ -233,7 +335,7 @@ export default function Silhouette() {
             cy={j.y}
             r="2.2"
             fill="var(--color-cyan)"
-            style={{ filter: "drop-shadow(0 0 4px var(--color-cyan))" }}
+            style={{ filter: "drop-shadow(0 0 4px var(--color-cyan))", pointerEvents: "none" }}
           />
         ))}
       </motion.svg>
@@ -248,6 +350,29 @@ export default function Silhouette() {
             ? `Scénario démo — ${muscles.length} zone(s)`
             : `Utilisateur ${selectedUserId} — ${muscles.length} zone(s) avec données`)}
       </p>
+
+      {/* Legende des couleurs -- PORTEE depuis l'ancien dashboard
+          (dashboard/static/index.html, <ul class="legend">), absente de
+          dashboard-v2 jusqu'ici (signale par l'utilisateur, 2026-07-11).
+          Memes 4 niveaux/memes seuils, restyle en pastilles avec lueur
+          pour rester coherent avec le rendu wireframe/holographique
+          (au lieu des carres pleins "swatch" de l'ancien dashboard). */}
+      <ul className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px] text-slate-400">
+        {[
+          { label: "Faible (0-33)", color: "var(--color-risk-faible)" },
+          { label: "Modéré (34-66)", color: "var(--color-risk-modere)" },
+          { label: "Élevé (67-100)", color: "var(--color-risk-eleve)" },
+          { label: "Pas de donnée", color: "var(--color-risk-none)" },
+        ].map((item) => (
+          <li key={item.label} className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-2 w-2 shrink-0 rounded-full"
+              style={{ background: item.color, boxShadow: `0 0 5px ${item.color}` }}
+            />
+            {item.label}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

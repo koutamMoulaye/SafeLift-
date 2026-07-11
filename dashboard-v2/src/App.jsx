@@ -3,6 +3,7 @@ import TopBar from "./components/TopBar";
 import KpiStrip from "./components/KpiStrip";
 import Silhouette from "./components/Silhouette";
 import SensitiveZones from "./components/SensitiveZones";
+import ZoneDetailPanel from "./components/ZoneDetailPanel";
 import LogSessionForm from "./components/LogSessionForm";
 import WhatIfSimulator from "./components/WhatIfSimulator";
 import BottomTrends from "./components/BottomTrends";
@@ -11,7 +12,8 @@ import NutritionPanel from "./components/NutritionPanel";
 import MlPredictionPanel from "./components/MlPredictionPanel";
 
 // SafeLift dashboard-v2 -- layout complet. Grille 3 colonnes (colonne
-// gauche = zones sensibles + simulateur what-if empiles / silhouette
+// gauche = zones sensibles + detail de la zone selectionnee (au clic sur
+// la silhouette, 2026-07-11) + simulateur what-if empiles / silhouette
 // centrale / logger une seance) + grille de widgets en bas (tendance,
 // affluence, nutrition, tendance predictive ML). Silhouette centrale
 // branchee sur DashboardContext (correctif 2026-07-11) : suit desormais
@@ -29,6 +31,7 @@ export default function App() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr_320px]">
             <div className="flex flex-col gap-6">
               <SensitiveZones />
+              <ZoneDetailPanel />
               <WhatIfSimulator />
             </div>
 

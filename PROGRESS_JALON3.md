@@ -924,7 +924,119 @@ ci-dessus, qui reste le filet de securite pour la soutenance du
 **suivi detaille dans CLAUDE.md, section "Migration dashboard-v2 (React)"**
 (sous-etapes 1/N a 5/N a ce jour : scaffolding, correctif wireframe,
 tous les widgets branches, selecteur allege, correctif toggle
-demo + graphique tendance recharts, simulateur what-if porte). Ce
-fichier-ci (`PROGRESS_JALON3.md`) reste la reference pour le travail
-Jalon 3 sur l'ancien dashboard (nutrition, ML, style holographique
-ci-dessus), inchange et clos.
+demo + graphique tendance recharts, simulateur what-if porte), puis
+correctif de la silhouette figee sur `user_id=9` (2026-07-11, voir
+CLAUDE.md). Ce fichier-ci (`PROGRESS_JALON3.md`) reste la reference pour
+le travail Jalon 3 sur l'ancien dashboard (nutrition, ML, style
+holographique ci-dessus).
+
+## Extension multi-profils demo + verification finale (2026-07-11)
+
+**Hors du decoupage initial en 6 sous-etapes (toutes deja closes
+ci-dessus)** — travail additionnel realise le meme jour, avant la
+cloture complete du jalon :
+
+1. **Extension multi-profils** : l'historique reel `weight_training`,
+   jusque-la rattache a UN SEUL profil (`user_id=9`), est reparti entre
+   **5 profils `dim_user` reels distincts** (9, 21, 34, 46, 83) via 5
+   blocs chronologiques CONTIGUS (`dbt/seeds/demo_user_blocks_seed.csv`).
+   RGPD (pseudonymisation + droit a l'effacement) et ML (Jalon 3)
+   re-verifies/recalcules reellement sur cette nouvelle realite. Detail
+   complet : `data/gold/GOLD_MODEL_DECISIONS.md` section 5,
+   `data/ml/ML_DATA_PREP.md`, `data/ml/ML_TRAINING_RESULTS.md`,
+   `docs/RGPD_GOVERNANCE.md` section 5.
+2. **Resynchronisation export S3/Athena** : `scripts/upload_gold_to_s3.py`
+   relance reellement (credentials `awslearnerlab` encore valides, aucun
+   rafraichissement manuel necessaire), requetes Athena de validation
+   confirmant `cnt=2170`/`distinct_users=5`. Detail :
+   `terraform/AWS_LAB_CONSTRAINTS.md`.
+3. **Verification finale de cloture** (ce document, section suivante) :
+   stabilite sous charge complete (16 min, tous services), test de parite
+   final sur les 5 profils (2 dashboards), script de demo consolide
+   (`docs/DEMO_SCRIPT_FINAL.md`), recensement des points ouverts
+   (`PROGRESS_FINAL.md`).
+
+### Verification finale — stabilite sous charge complete (17.7 minutes)
+
+**Fenetre reelle** : 2026-07-11T00:02:10Z -> 2026-07-11T00:19:54Z (17.7
+minutes, > 15 minutes demandees, 32 mesures a intervalle de 30s), TOUS
+les services actifs
+simultanement (`gym-simulator`, `spark-streaming-gym`,
+`user-inputs-consumer`, `dashboard` (18000) ET `dashboard-v2` (5173, `npm
+run dev`) en parallele, streaming SSE de l'affluence actif en continu).
+
+**2 seances temps reel declenchees pendant la fenetre, sur 2 profils
+DIFFERENTS de user_id=9** (contrainte explicite de cette verification —
+confirmer que le pipeline complet fonctionne sur tous les profils demo,
+pas seulement l'historique le plus teste) :
+- `user_id=21`, "Bench Press (Barbell)" (zone `chest`) — DAG
+  `gold_dbt_run` (`realtime_input_user21_204e954e`) **succes en 52s**
+  (00:02:35 -> 00:03:27), `ml_scoring` enchaine **succes en 3s**.
+- `user_id=34`, "Bent Over Row (Dumbbell)" (zone `back`) — DAG
+  `gold_dbt_run` (`realtime_input_user34_af07521a`) **succes en 91s**
+  (00:02:35 -> 00:04:06), `ml_scoring` enchaine **succes en 3s**.
+- Les 2 declenchements sont partis a ~1 seconde d'intervalle
+  (00:02:34/00:02:35) : **confirme reellement**, pas juste suppose, que 2
+  DAG runs concurrents sur `gold_dbt_run` ne se bloquent pas
+  mutuellement. `gold.ml_risk_prediction` rafraichie pour les 5 profils
+  en une seule passe consecutive (`scored_at` identique aux
+  microseconde pres sur les 5 profils, confirmant le rafraichissement
+  complet `TRUNCATE`+reinsert de `score_risk_trend.py`).
+
+**Resultats de la surveillance (32 mesures/30s, log brut conserve dans
+les artefacts de session)** :
+- **`RestartCount` de tous les services : STABLE sur toute la fenetre**
+  (aucune augmentation par rapport a la mesure de reference prise au
+  debut) — valeurs de reference non-nulles pre-existantes sur
+  `airflow-webserver` (1), `kafka` (3), `user-inputs-consumer` (4) dues a
+  des redemarrages ANTERIEURS a cette fenetre de test (rebuild du
+  conteneur `dashboard` plus tot dans la session, redemarrages Kafka
+  historiques) — **honnetement rapporte** : ce qui compte pour cette
+  verification est l'absence de NOUVEAU redemarrage pendant les 16
+  minutes, confirme.
+- **Allocation de coeurs Spark coherente** : `coresused=1` en regime
+  stable (verifie par sondage manuel via `docker exec safelift-spark-master
+  curl http://localhost:8080/json/`, le script de surveillance automatique
+  avait un bug d'URL — corrige a la volee, RestartCount non affecte par ce
+  bug) — le correctif `spark.cores.max=1` du Jalon 2 tient toujours sous
+  cette charge combinee, les 2 runs `gold_dbt_run` concurrents se sont
+  executes sans blocage.
+- **`dbt test` : 99/99 PASS** avant ET apres les 2 declenchements
+  concurrents.
+- **Bug historique clarifie en verifiant** : 3 runs `gold_dbt_run`
+  anterieurs (2026-07-10, tests de dashboard-v2 avant l'extension
+  multi-profils) avaient echoue sur `dbt_test` — cause identifiee comme
+  le meme bug de grain deja corrige pendant l'extension multi-profils
+  (2 soumissions du meme exercice le meme jour), **pas un probleme actif
+  aujourd'hui** (confirme resolu par les runs reussis de cette fenetre).
+
+### Verification finale — parite des 5 profils sur les 2 dashboards
+
+**Backend** (tous les 5 profils, `curl` direct) : `nutrition` et
+`risk/prediction` (`available:true`) confirmes fonctionnels pour 9, 21,
+34, 46, 83.
+
+**dashboard-v2 (5173)** : silhouette + zones sensibles + simulateur
+what-if + nutrition + tendance ML tous confirmes presents et fonctionnels
+sur les 5 profils (script Playwright `verify_parity_5profiles.cjs`) —
+silhouette affiche correctement "Utilisateur {id} — 8 zone(s) avec
+donnees" a chaque changement, capture d'ecran prise sur `user_id=83`
+(zone epaules en Modere, coherent avec les donnees reelles).
+
+**Ancien dashboard (18000)** : score global distinct par profil confirme
+reellement different pour chacun des 5 (**preuve que ce ne sont pas des
+donnees en cache/statiques** : 10 pour user 9, 32 pour user 21, 58 pour
+user 34, 14 pour user 46, 64 pour user 83), panneaux ML/nutrition/what-if
+tous presents sur les 5, capture d'ecran prise sur `user_id=34`.
+
+**Conclusion** : parite fonctionnelle confirmee sur les 5 profils, sur
+les 2 dashboards, pas seulement `user_id=9` (le plus teste jusqu'ici).
+
+## Cloture du Jalon 3 (2026-07-11)
+
+Les 6 sous-etapes prevues sont **toutes faites** (voir recapitulatif en
+tete de ce document), plus l'extension multi-profils et la verification
+finale de cette section. **Jalon 3 clos le 2026-07-11.** Voir
+[PROGRESS_FINAL.md](./PROGRESS_FINAL.md) pour le resume de cloture
+GLOBAL du projet (3 jalons) et la liste consolidee des points encore
+ouverts avant la soutenance.
